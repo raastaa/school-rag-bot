@@ -13,7 +13,7 @@ MAX_ITEMS      = 3
 SNIPPET_LIMIT  = 800
 NEIGH_BEFORE   = 0          # только центр
 NEIGH_AFTER    = 1          # и ОДИН чанк после
-THRESHOLD      = float(os.getenv("RELEVANCE_THRESHOLD", "0.25"))  # порог релевантности (>=)
+THRESHOLD      = float(os.getenv("RELEVANCE_THRESHOLD", "0.82"))  # порог релевантности (>=)
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "school_docs")
 
 def _escape(t: str) -> str:
@@ -96,8 +96,8 @@ async def _summarize_text(text: str) -> str:
         "На основе приведённого текста составь краткую выжимку (2-3 абзаца) "
         "и чёткий пошаговый алгоритм действий. Ничего не придумывай вне этого текста.\n\n"
         f"Текст:\n{cut}\n\n"
-        "Ответ сформируй в виде:\n"
-        "Краткая выжимка:\n<абзацы>\n\nАлгоритм действий:\n1. ..."
+        "Ответ сформируй строго без каких-либо вступлений:\n"
+        "<абзацы выжимки без заголовка>\n\nАлгоритм действий:\n1. ..."
     )
     return await chat(prompt)
 
@@ -157,6 +157,8 @@ async def retrieve_local(
     for h in passed:
         pl = h.payload or {}
         path = pl.get("path")
+        if path and path in files_set:
+            continue
         center_id = pl.get("id") or str(h.id)
         header = _block_header(pl)
         score = getattr(h, "score", None)
@@ -172,7 +174,20 @@ async def retrieve_local(
             summary_raw = await _summarize_text(full_text)
             if summary_raw:
                 sr = summary_raw.strip()
-                sr = sr.replace("Краткая выжимка:\n", "", 1).replace("Краткая выжимка:", "", 1).strip()
+                lines_sr = sr.splitlines()
+                cleaned: List[str] = []
+                started = False
+                for line in lines_sr:
+                    low = line.lower().lstrip()
+                    if not started:
+                        if "краткая выжимка" in low:
+                            started = True
+                            continue
+                        if low.startswith("запрос:") or low.startswith("источник:") or low.startswith("общая информация:"):
+                            continue
+                    cleaned.append(line)
+                    started = True
+                sr = "\n".join(cleaned).strip()
                 marker = "Алгоритм действий:"
                 if marker in sr:
                     before, alg = sr.split(marker, 1)
