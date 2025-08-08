@@ -13,7 +13,7 @@ MAX_ITEMS      = 3
 SNIPPET_LIMIT  = 800
 NEIGH_BEFORE   = 0          # только центр
 NEIGH_AFTER    = 1          # и ОДИН чанк после
-THRESHOLD      = float(os.getenv("RELEVANCE_THRESHOLD", "0.25"))  # порог релевантности (>=)
+THRESHOLD      = float(os.getenv("RELEVANCE_THRESHOLD", "0.82"))  # порог релевантности (>=)
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "school_docs")
 
 def _escape(t: str) -> str:
