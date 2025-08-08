@@ -171,7 +171,17 @@ async def retrieve_local(
             full_text = "\n".join(p.get("text") or "" for p in ordered)
             summary_raw = await _summarize_text(full_text)
             if summary_raw:
-                summary = _escape(summary_raw)
+                sr = summary_raw.strip()
+                sr = sr.replace("Краткая выжимка:\n", "", 1).replace("Краткая выжимка:", "", 1).strip()
+                marker = "Алгоритм действий:"
+                if marker in sr:
+                    before, alg = sr.split(marker, 1)
+                    before_html = _escape(before.strip())
+                    alg_html = _escape(marker + "\n" + alg.strip())
+                    prefix = f"{before_html}\n" if before_html else ""
+                    summary = f"{prefix}<b>{alg_html}</b>"
+                else:
+                    summary = _escape(sr)
         if summary:
             block += f"\n{summary}"
         lines.append(block + "\n")
