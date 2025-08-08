@@ -89,4 +89,28 @@ def _probe_dim_sync() -> int:
 async def detect_dim() -> int:
     return await asyncio.to_thread(_probe_dim_sync)
 
-__all__ = ["GigaChatEmbedder", "detect_dim"]
+async def chat(prompt: str) -> str:
+    """Простой вызов chat-комплитов GigaChat.
+
+    Возвращает текст первого сообщения или пустую строку при ошибке.
+    """
+    if not CREDENTIALS:
+        return ""
+    cli = _new_client()
+    try:
+        resp = await cli.achat(prompt)
+        choices = getattr(resp, "choices", None) or []
+        if not choices:
+            return ""
+        msg = getattr(choices[0], "message", None)
+        content = getattr(msg, "content", "") if msg else ""
+        return content.strip()
+    except Exception:
+        return ""
+    finally:
+        try:
+            await cli.aclose()
+        except Exception:
+            pass
+
+__all__ = ["GigaChatEmbedder", "detect_dim", "chat"]

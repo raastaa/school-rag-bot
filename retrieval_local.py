@@ -4,7 +4,7 @@ from typing import List, Dict, Tuple
 import os
 import html
 
-from gigachat_client import GigaChatEmbedder
+from gigachat_client import GigaChatEmbedder, chat
 from store_qdrant import search as qsearch, get_client
 from qdrant_client.models import Filter, FieldCondition, MatchValue
 
@@ -86,6 +86,21 @@ def _neighbors_preview(all_payloads: List[Dict], center_id: str) -> str:
     parts = [pl.get("text") or "" for pl in all_sorted[lo:hi]]
     return _concat_limit(parts, SNIPPET_LIMIT)
 
+async def _summarize_text(text: str) -> str:
+    """Получаем краткое резюме и алгоритм действий через GigaChat."""
+    if not text:
+        return ""
+    # ограничим размер текста, чтобы не превышать лимиты модели
+    cut = text[:12000]
+    prompt = (
+        "На основе приведённого текста составь краткую выжимку (2-3 абзаца) "
+        "и чёткий пошаговый алгоритм действий. Ничего не придумывай вне этого текста.\n\n"
+        f"Текст:\n{cut}\n\n"
+        "Ответ сформируй в виде:\n"
+        "Краткая выжимка:\n<абзацы>\n\nАлгоритм действий:\n1. ..."
+    )
+    return await chat(prompt)
+
 def extract_scored(hits: list) -> list[tuple[dict, float | None]]:
     """Удобно вытащить (payload, score) для логирования."""
     out = []
@@ -144,8 +159,22 @@ async def retrieve_local(
         path = pl.get("path")
         center_id = pl.get("id") or str(h.id)
         header = _block_header(pl)
+        score = getattr(h, "score", None)
+        score_txt = f" (коэфф. {score:.3f})" if score is not None else ""
         preview = _neighbors_preview(_collect_doc_points(path) if path else [], center_id)
-        lines.append(f"• {header}\n{preview}\n")
+        block = f"• {header}{score_txt}\n{preview}" if preview else f"• {header}{score_txt}"
+
+        summary = ""
+        if path and pl.get("source_group") != "spravochnik":
+            all_payloads = _collect_doc_points(path)
+            ordered = sorted(all_payloads, key=_sort_key)
+            full_text = "\n".join(p.get("text") or "" for p in ordered)
+            summary_raw = await _summarize_text(full_text)
+            if summary_raw:
+                summary = _escape(summary_raw)
+        if summary:
+            block += f"\n{summary}"
+        lines.append(block + "\n")
         cites.append({
             "source": pl.get("source"),
             "page_from": pl.get("page_from"),
