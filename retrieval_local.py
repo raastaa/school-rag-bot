@@ -86,6 +86,35 @@ def _neighbors_preview(all_payloads: List[Dict], center_id: str) -> str:
     parts = [pl.get("text") or "" for pl in all_sorted[lo:hi]]
     return _concat_limit(parts, SNIPPET_LIMIT)
 
+def _expand_paragraph(all_payloads: List[Dict], center_id: str) -> str:
+    """Берём центр и расширяем до границ абзаца или главы.
+
+    На практике используем простое эвристическое правило: границей
+    считаем перевод строки. Если искомый чанк не найден, возвращаем его
+    собственный текст.
+    """
+    if not all_payloads:
+        return ""
+    ordered = sorted(all_payloads, key=_sort_key)
+    texts = [pl.get("text") or "" for pl in ordered]
+    idx = next((i for i, pl in enumerate(ordered) if pl.get("id") == center_id), None)
+    if idx is None:
+        return ordered[0].get("text") or ""
+    # соберём полный текст и позиции начала каждого чанка
+    offsets: List[int] = []
+    cur = 0
+    for t in texts:
+        offsets.append(cur)
+        cur += len(t) + 1  # учтём перевод строки между чанками
+    full = "\n".join(texts)
+    start_pos = offsets[idx]
+    end_pos = start_pos + len(texts[idx])
+    para_start = full.rfind("\n", 0, start_pos)
+    para_start = 0 if para_start == -1 else para_start + 1
+    para_end = full.find("\n", end_pos)
+    para_end = len(full) if para_end == -1 else para_end
+    return full[para_start:para_end].strip()
+
 async def _summarize_text(text: str) -> str:
     """Получаем краткое резюме и алгоритм действий через GigaChat."""
     if not text:
@@ -163,15 +192,19 @@ async def retrieve_local(
         header = _block_header(pl)
         score = getattr(h, "score", None)
         score_txt = f" (коэфф. {score:.3f})" if score is not None else ""
-        preview = _neighbors_preview(_collect_doc_points(path) if path else [], center_id)
+        doc_payloads = _collect_doc_points(path) if path else []
+        preview = _neighbors_preview(doc_payloads, center_id)
         block = f"• {header}{score_txt}\n{preview}" if preview else f"• {header}{score_txt}"
 
         summary = ""
-        if path and pl.get("source_group") != "spravochnik":
-            all_payloads = _collect_doc_points(path)
-            ordered = sorted(all_payloads, key=_sort_key)
-            full_text = "\n".join(p.get("text") or "" for p in ordered)
-            summary_raw = await _summarize_text(full_text)
+        if path:
+            summary_text = ""
+            if pl.get("source_group") == "spravochnik":
+                summary_text = _expand_paragraph(doc_payloads, center_id)
+            else:
+                ordered = sorted(doc_payloads, key=_sort_key)
+                summary_text = "\n".join(p.get("text") or "" for p in ordered)
+            summary_raw = await _summarize_text(summary_text)
             if summary_raw:
                 sr = summary_raw.strip()
                 lines_sr = sr.splitlines()
