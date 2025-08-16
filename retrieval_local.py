@@ -116,19 +116,49 @@ def _expand_paragraph(all_payloads: List[Dict], center_id: str) -> str:
     return full[para_start:para_end].strip()
 
 async def _summarize_text(text: str) -> str:
-    """Получаем краткое резюме и алгоритм действий через GigaChat."""
+    """Получаем короткое введение и алгоритм действий через GigaChat."""
     if not text:
         return ""
     # ограничим размер текста, чтобы не превышать лимиты модели
     cut = text[:12000]
     prompt = (
-        "На основе приведённого текста составь краткую выжимку (2-3 абзаца) "
-        "и чёткий пошаговый алгоритм действий. Ничего не придумывай вне этого текста.\n\n"
+        "На основе приведённого текста составь короткое информационное введение "
+        "и пошаговый алгоритм действий для директора школы. Ничего не придумывай "
+        "и не добавляй сведений вне этого текста. Если сделать введение или алгоритм "
+        "невозможно, сообщи об этом.\n\n"
         f"Текст:\n{cut}\n\n"
-        "Ответ сформируй строго без каких-либо вступлений:\n"
-        "<абзацы выжимки без заголовка>\n\nАлгоритм действий:\n1. ..."
+        "Ответ оформи строго в формате:\n"
+        "Введение:\n<введение или сообщение об отсутствии>\n\n"
+        "Алгоритм действий:\n1. ..."
     )
     return await chat(prompt)
+
+def _expand_chapter(all_payloads: List[Dict], center_id: str) -> str:
+    """Расширяем текст до границ условной главы.
+
+    Границей главы считаем двойной перевод строки. Если определить
+    границы не удаётся, возвращаем текст параграфа.
+    """
+    if not all_payloads:
+        return ""
+    ordered = sorted(all_payloads, key=_sort_key)
+    texts = [pl.get("text") or "" for pl in ordered]
+    idx = next((i for i, pl in enumerate(ordered) if pl.get("id") == center_id), None)
+    if idx is None:
+        return ordered[0].get("text") or ""
+    offsets: List[int] = []
+    cur = 0
+    for t in texts:
+        offsets.append(cur)
+        cur += len(t) + 1
+    full = "\n".join(texts)
+    start_pos = offsets[idx]
+    end_pos = start_pos + len(texts[idx])
+    chap_start = full.rfind("\n\n", 0, start_pos)
+    chap_start = 0 if chap_start == -1 else chap_start + 2
+    chap_end = full.find("\n\n", end_pos)
+    chap_end = len(full) if chap_end == -1 else chap_end
+    return full[chap_start:chap_end].strip()
 
 def extract_scored(hits: list) -> list[tuple[dict, float | None]]:
     """Удобно вытащить (payload, score) для логирования."""
@@ -200,7 +230,7 @@ async def retrieve_local(
         if path:
             summary_text = ""
             if pl.get("source_group") == "spravochnik":
-                summary_text = _expand_paragraph(doc_payloads, center_id)
+                summary_text = _expand_chapter(doc_payloads, center_id) or _expand_paragraph(doc_payloads, center_id)
             else:
                 ordered = sorted(doc_payloads, key=_sort_key)
                 summary_text = "\n".join(p.get("text") or "" for p in ordered)
@@ -213,9 +243,6 @@ async def retrieve_local(
                 for line in lines_sr:
                     low = line.lower().lstrip()
                     if not started:
-                        if "краткая выжимка" in low:
-                            started = True
-                            continue
                         if low.startswith("запрос:") or low.startswith("источник:") or low.startswith("общая информация:"):
                             continue
                     cleaned.append(line)
