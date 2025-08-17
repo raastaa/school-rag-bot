@@ -47,6 +47,7 @@ from db_local import (
     init_db,
     upsert_user,
     insert_question,
+    fetch_user_questions,
     mark_answered,
     log_unanswered,
     log_answer_score,
@@ -320,7 +321,8 @@ async def cmd_help(m: Message):
     text = (
         "Доступные команды:\n"
         "• /start — приветственное сообщение\n"
-        "• /help — показать эту справку"
+        "• /help — показать эту справку\n"
+        "• /my_history — показать ваши последние запросы"
     )
     if is_adm:
         text += (
@@ -330,6 +332,22 @@ async def cmd_help(m: Message):
         await m.answer(text, reply_markup=admin_kb(), parse_mode="HTML")
     else:
         await m.answer(text, parse_mode="HTML")
+
+
+@router.message(Command("my_history"))
+async def cmd_my_history(m: Message):
+    tg = m.from_user
+    user_id = await asyncio.to_thread(
+        upsert_user, tg.id, tg.username, tg.first_name, tg.last_name
+    )
+    questions = await asyncio.to_thread(fetch_user_questions, user_id, 10)
+    if questions:
+        lines = "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))
+        text = f"Ваши последние {len(questions)} запросов:\n{lines}"
+        for chunk in _split_long(text):
+            await m.answer(chunk, parse_mode="HTML")
+    else:
+        await m.answer("У вас пока нет запросов.", parse_mode="HTML")
 
 
 @router.message(Command("clear_index"))

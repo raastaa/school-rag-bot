@@ -140,6 +140,19 @@ def insert_question(user_id: int, question: str) -> int:
         con.close()
 
 
+def fetch_user_questions(user_id: int, limit: int) -> list[str]:
+    con = _conn()
+    try:
+        cur = con.execute(
+            "SELECT question FROM questions WHERE user_id=? ORDER BY created_at DESC LIMIT ?",
+            (user_id, limit),
+        )
+        rows = cur.fetchall()
+        return [row[0] for row in rows]
+    finally:
+        con.close()
+
+
 def mark_answered(question_id: int, stage: str):
     con = _conn()
     try:
