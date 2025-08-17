@@ -15,5 +15,5 @@ async def retrieve_site_live(question: str, max_results: int = 5) -> Tuple[str, 
     for i, it in enumerate(results, 1):
         t = it.get("title") or it["link"]
         s = (it.get("snippet") or "").strip()
-        lines.append(f"{i}. {t}\n{it['link']}\n{s}")
+        lines.append(f"{i}. <a href='{it['link']}'>{t}</a>\n{s}")
     return "\n\n".join(lines), results
