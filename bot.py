@@ -269,10 +269,15 @@ async def handle_question(m: Message):
         for idx, pl in enumerate(hits):
             topic = html.escape(pl.get("source") or "Источник")
             snippet = preview_from_payload(pl)
-            kb = InlineKeyboardMarkup(
-                inline_keyboard=[[InlineKeyboardButton(text="✅", callback_data=f"accept_local:{idx}"),
-                                  InlineKeyboardButton(text="❌", callback_data=f"reject_local:{idx}")]]
-            )
+            buttons = [
+                [
+                    InlineKeyboardButton(text="✅", callback_data=f"accept_local:{idx}"),
+                    InlineKeyboardButton(text="❌", callback_data=f"reject_local:{idx}")
+                ]
+            ]
+            if len(hits) > 1:
+                buttons.append([InlineKeyboardButton(text='Показать все', callback_data='accept_local_all')])
+            kb = InlineKeyboardMarkup(inline_keyboard=buttons)
             await m.answer(f"<b>{topic}</b>\n{snippet}", parse_mode="HTML", reply_markup=kb)
         return
 
@@ -330,6 +335,35 @@ async def accept_local(cb: CallbackQuery):
     )
     if files:
         await send_files(cb.message, files, limit=3)
+    await cb.answer()
+
+
+@router.callback_query(F.data == "accept_local_all")
+async def accept_local_all(cb: CallbackQuery):
+    hits = pending_local.get(cb.from_user.id) or []
+    if not hits:
+        await cb.answer("Ответы не найдены")
+        return
+    await cb.message.edit_reply_markup()
+    texts: list[str] = []
+    files_set: set[str] = set()
+    for i, pl in enumerate(hits):
+        msg_text, cites, files = await format_answer_from_payload(pl)
+        if i > 0 and msg_text.startswith("Информация найдена в локальной базе."):
+            msg_text = msg_text.split("\n", 1)[1].lstrip()
+        texts.append(msg_text)
+        for f in files:
+            files_set.add(f)
+    combined = "\n\n".join(texts).strip()
+    for chunk in _split_long(combined):
+        await cb.message.answer(chunk, parse_mode="HTML")
+    await cb.message.answer(
+        "Дополнительную информацию вы можете прочитать в файлах, прикрепленных ниже.",
+        parse_mode="HTML",
+    )
+    if files_set:
+        await send_files(cb.message, list(files_set), limit=3)
+    pending_local.pop(cb.from_user.id, None)
     await cb.answer()
 
 
