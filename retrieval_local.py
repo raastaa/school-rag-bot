@@ -5,7 +5,6 @@ import os
 import html
 import re
 import time
-from dataclasses import dataclass
 import numpy as np
 from rank_bm25 import BM25Okapi
 import logging
@@ -14,6 +13,7 @@ from gigachat_client import GigaChatEmbedder, chat, generate_query_hyde
 from store_qdrant import search as qsearch, get_client
 from qdrant_client.models import Filter, FieldCondition, MatchValue
 from db_local import get_feedback_by_source
+from models import DocChunk
 
 # Параметры
 MAX_ITEMS = 3
@@ -55,23 +55,14 @@ def _apply_feedback(score: float, source: str | None) -> float:
     return score * (1.0 + avg)
 
 
-@dataclass
-class Doc:
-    id: str
-    text: str
-    vector: List[float]
-    score: float
-    payload: Dict
-
-
 def _cosine(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9))
 
 
 def select_chunks_mmr(
-    qv: np.ndarray, docs: List[Doc], k: int = 5, lam: float = 0.7
-) -> List[Doc]:
-    selected: List[Doc] = []
+    qv: np.ndarray, docs: List[DocChunk], k: int = 5, lam: float = 0.7
+) -> List[DocChunk]:
+    selected: List[DocChunk] = []
     rest = docs[:]
     while rest and len(selected) < k:
         best, best_val = None, -1e9
@@ -94,7 +85,9 @@ def select_chunks_mmr(
     return selected
 
 
-def rerank_combined(query: str, docs: List[Doc], alpha: float = 0.7) -> List[Doc]:
+def rerank_combined(
+    query: str, docs: List[DocChunk], alpha: float = 0.7
+) -> List[DocChunk]:
     if not docs:
         return []
     tokenized_corpus = [d.text.split() for d in docs]
@@ -112,12 +105,12 @@ def rerank_combined(query: str, docs: List[Doc], alpha: float = 0.7) -> List[Doc
     return [d for d, _ in ranked]
 
 
-async def fused_search(queries: List[str], top_k: int = 5) -> List[Doc]:
+async def fused_search(queries: List[str], top_k: int = 5) -> List[DocChunk]:
     logger.info("Starting fused search for %d queries, top_k=%d", len(queries), top_k)
     emb = GigaChatEmbedder()
     logger.info("Embedding queries")
     vecs = await emb.embed(queries)
-    docs: Dict[str, Doc] = {}
+    docs: Dict[str, DocChunk] = {}
     for q, vec in zip(queries, vecs):
         logger.info("Searching Qdrant for query: %s", q)
         hits = qsearch(vec, top_k=top_k * 2)
@@ -126,17 +119,23 @@ async def fused_search(queries: List[str], top_k: int = 5) -> List[Doc]:
             if "id" not in pl:
                 pl["id"] = str(h.id)
             if pl["id"] not in docs:
-                docs[pl["id"]] = Doc(
+                docs[pl["id"]] = DocChunk(
                     id=pl["id"],
+                    doc_id=pl.get("doc_id"),
+                    path=pl.get("path"),
+                    page_from=pl.get("page_from"),
+                    page_to=pl.get("page_to"),
                     text=pl.get("text", ""),
                     vector=h.vector or [],
                     score=h.score or 0.0,
+                    section=pl.get("section"),
                     payload=pl,
                 )
     out = list(docs.values())
     logger.info("Collected %d documents before feedback adjustment", len(out))
     for d in out:
-        d.score = _apply_feedback(d.score, d.payload.get("source"))
+        src = d.payload.get("source") if d.payload else None
+        d.score = _apply_feedback(d.score, src)
     if RERANK_ENABLED:
         logger.info("Reranking %d documents", len(out))
         out = rerank_combined(queries[0], out)
@@ -347,7 +346,7 @@ def preview_from_payload(pl: Dict, query: str | None = None) -> str:
     path = pl.get("path")
     center_id = pl.get("id")
     doc_payloads = _collect_doc_points(path) if path else []
-    txt = _neighbors_preview(doc_payloads, center_id)
+    txt = _neighbors_preview(doc_payloads, str(center_id))
     sentences = re.split(r"(?<=[.!?])\s+", txt.strip())
     preview = " ".join(sentences[:2]).strip()
     return _highlight_terms(preview, query)
@@ -372,8 +371,8 @@ async def format_answer_from_payload(pl: Dict) -> Tuple[str, List[Dict], List[st
             # текст до границ ближайшего абзаца, а при отсутствии
             # результата — до условной главы.
             summary_text = _expand_paragraph(
-                doc_payloads, center_id
-            ) or _expand_chapter(doc_payloads, center_id)
+                doc_payloads, str(center_id)
+            ) or _expand_chapter(doc_payloads, str(center_id))
         else:
             ordered = sorted(doc_payloads, key=_sort_key)
             summary_text = "\n".join(p.get("text") or "" for p in ordered)
@@ -414,7 +413,7 @@ async def format_answer_from_payload(pl: Dict) -> Tuple[str, List[Dict], List[st
             "source": pl.get("source"),
             "page_from": pl.get("page_from"),
             "path": path,
-            "text": _neighbors_preview(doc_payloads, center_id),
+            "text": _neighbors_preview(doc_payloads, str(center_id)),
         }
     )
     if path:
@@ -496,7 +495,7 @@ async def retrieve_local_hits(
     top_k: int = MAX_ITEMS,
     prefer_spravochnik: bool = True,
     mode: str | None = None,
-) -> Tuple[List[Dict], Dict[str, list]]:
+) -> Tuple[List[Dict], str, Dict[str, list]]:
     """Возвращает список payload'ов релевантных чанков без форматирования."""
     _ = mode  # параметр для совместимости интерфейса
     logger.info(
@@ -516,11 +515,29 @@ async def retrieve_local_hits(
     logger.info("Selecting top %d chunks with MMR", top_k)
     docs_sel = select_chunks_mmr(qvec, docs, k=top_k)
 
+    # remove near-duplicates
+    unique: List[DocChunk] = []
+    for d in docs_sel:
+        dv = np.array(d.vector)
+        if any(_cosine(dv, np.array(u.vector)) > 0.95 for u in unique):
+            continue
+        unique.append(d)
+    docs_sel = unique
+
+    # dynamic percentile threshold
+    if docs_sel:
+        scores = np.array([d.score for d in docs_sel])
+        perc = float(np.percentile(scores, 80))
+        dyn_thr = max(THRESHOLD, perc)
+        docs_sel = [d for d in docs_sel if d.score >= dyn_thr]
+    else:
+        dyn_thr = THRESHOLD
+
     passed_payloads, passed_diag, rejected_diag = [], [], []
     for d in docs_sel:
         sc = d.score
-        pl = d.payload
-        if sc is None or sc >= THRESHOLD:
+        pl: Dict = d.payload or {}
+        if sc is None or sc >= dyn_thr:
             passed_payloads.append(pl)
             passed_diag.append((pl, sc))
         else:
@@ -528,9 +545,9 @@ async def retrieve_local_hits(
 
     logger.info(
         "Documents passed threshold %.2f: %d/%d",
-        THRESHOLD,
+        dyn_thr,
         len(passed_payloads),
-        len(docs_sel),
+        len(unique),
     )
     logger.info("Summarizing documents")
     summary = await summarize([pl.get("text", "") for pl in passed_payloads])
