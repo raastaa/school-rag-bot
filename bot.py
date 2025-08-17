@@ -528,9 +528,8 @@ async def handle_question(m: Message, state: FSMContext):
 
     if site_results:
         await asyncio.to_thread(mark_answered, question_id, "site")
-        return  # есть выдача на этапе 2 → веб не запускаем
 
-    # Этап 3 — интернет (только если 1 и 2 пусто)
+    # Этап 3 — интернет (запускаем всегда, если нет локальных совпадений)
     await m.answer("Ищу в интернете…", parse_mode="HTML")
     await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
     try:
@@ -541,12 +540,27 @@ async def handle_question(m: Message, state: FSMContext):
         await msg.edit_text("Нашёл ответы в интернете", parse_mode="HTML")
     else:
         await msg.edit_text("В интернете ничего не найдено", parse_mode="HTML")
-    for chunk in _split_long(web_text):
+
+    # Отдельный блок с веб-результатами
+    if web_results:
+        web_block = "По данным сети…\n" + web_text
+    else:
+        web_block = "По данным сети ничего не найдено"
+    for chunk in _split_long(web_block):
         await m.answer(chunk, parse_mode="HTML")
 
-    if web_results:
+    # логируем источники веб-поиска
+    for it in web_results:
+        payload = {
+            "source": it.get("link"),
+            "source_group": "web",
+            "path": it.get("link"),
+        }
+        await asyncio.to_thread(log_answer_score, question_id, payload, None, True)
+
+    if web_results and not site_results:
         await asyncio.to_thread(mark_answered, question_id, "web")
-    else:
+    elif not (site_results or web_results):
         await m.answer(
             "Не удалось найти ответ; уточните вопрос или загрузите документы",
             parse_mode="HTML",
