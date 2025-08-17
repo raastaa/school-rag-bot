@@ -328,7 +328,7 @@ async def cmd_help(m: Message):
         text += (
             "\n• /clear_index — очистить локальный индекс Qdrant"
             "\n• /ingest_teach — проиндексировать все файлы из папки teach/ (source_group=teach)"
-            "\n• /feedback_stats — показать статистику обратной связи"
+            "\n• /query_history — последние вопросы пользователей"
         )
         await m.answer(text, reply_markup=admin_kb(), parse_mode="HTML")
     else:
@@ -379,19 +379,36 @@ async def cmd_ingest_teach(m: Message):
         await m.answer(f"Ошибка при индексации teach/: {e}", parse_mode="HTML")
 
 
-@router.message(Command("feedback_stats"))
-async def cmd_feedback_stats(m: Message):
+@router.message(Command("query_history"))
+async def cmd_query_history(m: Message):
     if not is_admin(m.from_user.id):
         return await m.answer(
             "Эта команда доступна только администратору.", parse_mode="HTML"
         )
-    stats = await asyncio.to_thread(get_feedback_stats)
-    text = (
-        "Статистика обратной связи:\n"
-        f"👍 {stats['positive']}\n"
-        f"👎 {stats['negative']}"
-    )
-    await m.answer(text, parse_mode="HTML")
+    parts = m.text.split()
+    limit = 20
+    if len(parts) > 1 and parts[1].isdigit():
+        limit = int(parts[1])
+    rows = await asyncio.to_thread(fetch_questions, limit)
+    if not rows:
+        return await m.answer("История пуста.", parse_mode="HTML")
+    lines = []
+    for r in rows:
+        parts_info = [str(r["tg_id"])]
+        if r.get("username"):
+            parts_info.append("@" + html.escape(r["username"]))
+        if r.get("phone"):
+            parts_info.append(html.escape(r["phone"]))
+        name = " ".join(filter(None, [r.get("first_name"), r.get("last_name")]))
+        if name:
+            parts_info.append(html.escape(name))
+        header = " | ".join(parts_info)
+        lines.append(
+            f"<b>{html.escape(r['created_at'])}</b>\n{header}\n{html.escape(r['question'])}"
+        )
+    text = "\n\n".join(lines)
+    for chunk in _split_long(text):
+        await m.answer(chunk, parse_mode="HTML")
 
 
 # -------------------- обработка вопроса пользователя --------------------
@@ -418,7 +435,7 @@ async def handle_question(m: Message):
 
     tg = m.from_user
     user_id = await asyncio.to_thread(
-        upsert_user, tg.id, tg.username, tg.first_name, tg.last_name
+        upsert_user, tg.id, tg.username, tg.first_name, tg.last_name, None
     )
     question_id = await asyncio.to_thread(insert_question, user_id, q)
 
