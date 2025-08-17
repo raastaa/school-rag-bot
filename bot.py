@@ -153,18 +153,29 @@ class AddDoc(StatesGroup):
     waiting_title = State()
     waiting_file = State()
 
+@router.message(Command('cancel'), AddDoc)
+async def cancel_add_doc(m: Message, state: FSMContext):
+    await state.clear()
+    await m.answer("Добавление документа отменено.", parse_mode="HTML")
+
 @router.message(F.text == "➕ Добавить документ")
 async def add_doc(m: Message, state: FSMContext):
     if not is_admin(m.from_user.id):
         return await m.answer("Эта функция доступна только администратору.", parse_mode="HTML")
     await state.set_state(AddDoc.waiting_title)
-    await m.answer("Введите название документа (как показывать пользователям).", parse_mode="HTML")
+    await m.answer(
+        "Введите название документа (как показывать пользователям). Командой /cancel можно прервать процесс.",
+        parse_mode="HTML",
+    )
 
 @router.message(AddDoc.waiting_title, F.text)
 async def got_title(m: Message, state: FSMContext):
     await state.update_data(title=m.text.strip())
     await state.set_state(AddDoc.waiting_file)
-    await m.answer("Пришлите PDF-файл документом (не фото).", parse_mode="HTML")
+    await m.answer(
+        "Пришлите PDF-файл документом (не фото). Командой /cancel можно прервать процесс.",
+        parse_mode="HTML",
+    )
 
 @router.message(AddDoc.waiting_file, F.document)
 async def got_file(m: Message, state: FSMContext):
