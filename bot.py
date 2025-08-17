@@ -357,6 +357,11 @@ async def handle_question(m: Message):
 
     if web_results:
         await asyncio.to_thread(mark_answered, question_id, "web")
+    else:
+        await m.answer(
+            "Не удалось найти ответ; уточните вопрос или загрузите документы",
+            parse_mode="HTML",
+        )
 
 
 @router.callback_query(F.data.startswith("show_local:"))
