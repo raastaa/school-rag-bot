@@ -247,6 +247,9 @@ async def cmd_ingest_teach(m: Message):
 async def handle_question(m: Message):
     q = m.text.strip()
 
+    # Сброс предыдущих локальных выдач для пользователя
+    pending_local.pop(m.from_user.id, None)
+
     # 0) БД: логируем пользователя и вопрос
     from db_local import DB_PATH  # только ради удобной отладки
     tg = m.from_user
@@ -331,10 +334,22 @@ async def accept_local(cb: CallbackQuery):
     if files:
         await send_files(cb.message, files, limit=3)
     await cb.answer()
+    pending_local.pop(cb.from_user.id, None)
 
 
 @router.callback_query(F.data.startswith("reject_local:"))
 async def reject_local(cb: CallbackQuery):
+    try:
+        idx = int(cb.data.split(":", 1)[1])
+    except Exception:
+        await cb.message.delete()
+        await cb.answer()
+        return
+    hits = pending_local.get(cb.from_user.id)
+    if hits and 0 <= idx < len(hits):
+        hits[idx] = None
+        if all(h is None for h in hits):
+            pending_local.pop(cb.from_user.id, None)
     await cb.message.delete()
     await cb.answer()
 
