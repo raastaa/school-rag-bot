@@ -354,7 +354,7 @@ def preview_from_payload(pl: Dict, query: str | None = None) -> str:
 
 async def format_answer_from_payload(pl: Dict) -> Tuple[str, List[Dict], List[str]]:
     """Формирует ответ по данному payload (без поиска)."""
-    lines: List[str] = ["Информация найдена в локальной базе.\n"]
+    lines: List[str] = []
     cites: List[Dict] = []
     files_set = set()
 
@@ -366,13 +366,8 @@ async def format_answer_from_payload(pl: Dict) -> Tuple[str, List[Dict], List[st
     if path:
         summary_text = ""
         if pl.get("source_group") == "spravochnik":
-            # Ранее для справочника брали целую главу, что приводило к
-            # одинаковым ответам. Теперь сначала пытаемся расширить
-            # текст до границ ближайшего абзаца, а при отсутствии
-            # результата — до условной главы.
-            summary_text = _expand_paragraph(
-                doc_payloads, str(center_id)
-            ) or _expand_chapter(doc_payloads, str(center_id))
+            # Для справочника берём текст целой главы, посвящённой запросу.
+            summary_text = _expand_chapter(doc_payloads, str(center_id))
         else:
             ordered = sorted(doc_payloads, key=_sort_key)
             summary_text = "\n".join(p.get("text") or "" for p in ordered)
@@ -420,6 +415,8 @@ async def format_answer_from_payload(pl: Dict) -> Tuple[str, List[Dict], List[st
         files_set.add(path)
 
     msg = "\n".join(lines).strip()
+    if not msg:
+        msg = "Информация не найдена в локальной базе."
     return msg, cites, list(files_set)
 
 
