@@ -208,6 +208,23 @@ def log_feedback(question_id: int, score: int, comment: str | None = None) -> No
         con.close()
 
 
+def get_feedback_stats() -> Dict[str, int]:
+    con = _conn()
+    try:
+        cur = con.execute(
+            "SELECT score, COUNT(*) FROM feedback GROUP BY score"
+        )
+        stats = {"positive": 0, "negative": 0}
+        for score, cnt in cur.fetchall():
+            if score > 0:
+                stats["positive"] = cnt
+            elif score < 0:
+                stats["negative"] = cnt
+        return stats
+    finally:
+        con.close()
+
+
 def upsert_file_index(path: str, size: int, mtime: float, sha256: str) -> None:
     con = _conn()
     try:
