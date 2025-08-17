@@ -9,6 +9,7 @@ import html
 from typing import List
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
 # --- sys.path safety ---
@@ -31,6 +32,7 @@ from aiogram.types import (
 from aiogram.enums import ChatAction
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
+from middlewares.throttle import Throttle
 
 # --- our modules ---
 from retrieval_local import (
@@ -38,46 +40,77 @@ from retrieval_local import (
     format_answer_from_payload,
     preview_from_payload,
 )
-from ingest.pdf_ingest import ingest_pdf           # админ: одиночный PDF
-from ingest.ingest_generic import ingest_path      # индексация папки (teach/)
-from store_qdrant import get_client                # /clear_index
+from ingest.pdf_ingest import ingest_pdf  # админ: одиночный PDF
+from ingest.ingest_generic import ingest_path  # индексация папки (teach/)
+from store_qdrant import get_client  # /clear_index
 from db_local import (
-    init_db, upsert_user, insert_question, mark_answered,
-    log_unanswered, log_answer_score
+    init_db,
+    upsert_user,
+    insert_question,
+    mark_answered,
+    log_unanswered,
+    log_answer_score,
+    log_feedback,
 )
+from gigachat_client import self_check_sufficiency
+from watcher import start_watcher
 
 # Этапы 2/3 (поиск по сайту / по вебу) — должны быть в проекте
 from retrieve_site_live import retrieve_site_live
-from retrieve_web_live  import retrieve_web_live
+from retrieve_web_live import retrieve_web_live
 
 # -------------------- настройки --------------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не задан в .env")
 
-ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip().isdigit()}
+ADMIN_IDS = {
+    int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip().isdigit()
+}
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "school_docs")
 TEACH_DIR = os.getenv("TEACH_DIR", "./teach")
+UPLOADS_DIR = os.getenv("UPLOADS_DIR", "./uploads")
 
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 router = Router()
 dp.include_router(router)
+# защита от флуда
+dp.update.middleware(Throttle(0.7))
 
 # Храним для пользователей список найденных локальных ответов
 pending_local: dict[int, list] = {}
 
+
 # -------------------- вспомогалки UI/админ --------------------
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
+
 
 def admin_kb():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="➕ Добавить документ")],
         ],
-        resize_keyboard=True
+        resize_keyboard=True,
     )
+
+
+def main_menu_kb():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(text="Задать вопрос"),
+                KeyboardButton(text="Добавить документ"),
+            ],
+            [
+                KeyboardButton(text="Примеры запросов"),
+                KeyboardButton(text="Настройки источников"),
+            ],
+        ],
+        resize_keyboard=True,
+    )
+
 
 def _split_long(text: str, limit: int = 4000) -> list[str]:
     """Режем длинное сообщение для Telegram (лимит ~4096)."""
@@ -90,14 +123,17 @@ def _split_long(text: str, limit: int = 4000) -> list[str]:
             out.append("".join(cur).rstrip())
             cur, cur_len = [add], len(add)
         else:
-            cur.append(add); cur_len += len(add)
+            cur.append(add)
+            cur_len += len(add)
     if cur:
         out.append("".join(cur).rstrip())
     return out
 
+
 # -------------------- отправка источников (+ DOCX→PDF) --------------------
 CONVERT_DIR = os.path.join("outputs", "converted")
 os.makedirs(CONVERT_DIR, exist_ok=True)
+
 
 def docx_to_pdf(src_path: str) -> str | None:
     """Конвертирует .docx -> .pdf через LibreOffice (headless)."""
@@ -109,8 +145,18 @@ def docx_to_pdf(src_path: str) -> str | None:
     try:
         with tempfile.TemporaryDirectory(prefix="docx2pdf_") as tmpdir:
             subprocess.run(
-                [soffice, "--headless", "--convert-to", "pdf", "--outdir", tmpdir, src_path],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True
+                [
+                    soffice,
+                    "--headless",
+                    "--convert-to",
+                    "pdf",
+                    "--outdir",
+                    tmpdir,
+                    src_path,
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=True,
             )
             base = os.path.splitext(os.path.basename(src_path))[0] + ".pdf"
             tmp_pdf = os.path.join(tmpdir, base)
@@ -122,12 +168,15 @@ def docx_to_pdf(src_path: str) -> str | None:
     except Exception:
         return None
 
+
 async def send_files(m: Message, paths: List[str], limit: int = 3):
     """Отправляем файлы-источники (до limit штук). DOCX конвертируем в PDF."""
     count = 0
     for p in paths:
         if count >= limit:
-            await m.answer(f"Показано первых {limit} файлов-источников.", parse_mode="HTML")
+            await m.answer(
+                f"Показано первых {limit} файлов-источников.", parse_mode="HTML"
+            )
             break
         try:
             ext = os.path.splitext(p)[1].lower()
@@ -140,7 +189,10 @@ async def send_files(m: Message, paths: List[str], limit: int = 3):
                     to_send_path = pdf_path
                     caption = os.path.basename(pdf_path)
                 else:
-                    await m.answer("Не удалось преобразовать DOCX в PDF, отправляю исходный файл.", parse_mode="HTML")
+                    await m.answer(
+                        "Не удалось преобразовать DOCX в PDF, отправляю исходный файл.",
+                        parse_mode="HTML",
+                    )
 
             await bot.send_chat_action(m.chat.id, ChatAction.UPLOAD_DOCUMENT)
             await m.answer_document(FSInputFile(to_send_path), caption=caption)
@@ -148,25 +200,31 @@ async def send_files(m: Message, paths: List[str], limit: int = 3):
         except Exception:
             await m.answer(f"Не удалось отправить файл: {p}", parse_mode="HTML")
 
+
 # -------------------- FSM: добавление документа (PDF) --------------------
 class AddDoc(StatesGroup):
     waiting_title = State()
     waiting_file = State()
 
-@router.message(Command('cancel'), AddDoc)
+
+@router.message(Command("cancel"), AddDoc)
 async def cancel_add_doc(m: Message, state: FSMContext):
     await state.clear()
     await m.answer("Добавление документа отменено.", parse_mode="HTML")
 
-@router.message(F.text == "➕ Добавить документ")
+
+@router.message(F.text.in_({"➕ Добавить документ", "Добавить документ"}))
 async def add_doc(m: Message, state: FSMContext):
     if not is_admin(m.from_user.id):
-        return await m.answer("Эта функция доступна только администратору.", parse_mode="HTML")
+        return await m.answer(
+            "Эта функция доступна только администратору.", parse_mode="HTML"
+        )
     await state.set_state(AddDoc.waiting_title)
     await m.answer(
         "Введите название документа (как показывать пользователям). Командой /cancel можно прервать процесс.",
         parse_mode="HTML",
     )
+
 
 @router.message(AddDoc.waiting_title, F.text)
 async def got_title(m: Message, state: FSMContext):
@@ -177,20 +235,30 @@ async def got_title(m: Message, state: FSMContext):
         parse_mode="HTML",
     )
 
+
 @router.message(AddDoc.waiting_file, F.document)
 async def got_file(m: Message, state: FSMContext):
     if not is_admin(m.from_user.id):
-        return await m.answer("Эта функция доступна только администратору.", parse_mode="HTML")
+        return await m.answer(
+            "Эта функция доступна только администратору.", parse_mode="HTML"
+        )
     doc = m.document
     if not doc.mime_type or "pdf" not in doc.mime_type.lower():
-        return await m.answer("Нужен именно PDF-файл. Пришлите ещё раз как документ.", parse_mode="HTML")
+        return await m.answer(
+            "Нужен именно PDF-файл. Пришлите ещё раз как документ.", parse_mode="HTML"
+        )
 
     data = await state.get_data()
     title = data.get("title") or doc.file_name or "Без названия"
 
     os.makedirs("uploads", exist_ok=True)
-    file_path = os.path.join("uploads", doc.file_name or f"upload_{doc.file_unique_id}.pdf")
-    await m.answer("Файл получен, начинаю индексацию… (это может занять несколько минут)", parse_mode="HTML")
+    file_path = os.path.join(
+        "uploads", doc.file_name or f"upload_{doc.file_unique_id}.pdf"
+    )
+    await m.answer(
+        "Файл получен, начинаю индексацию… (это может занять несколько минут)",
+        parse_mode="HTML",
+    )
     try:
         await bot.download(doc, destination=file_path)
         res = await ingest_pdf(file_path, title=title, source_label=doc.file_name)
@@ -201,37 +269,52 @@ async def got_file(m: Message, state: FSMContext):
             f"Страниц: {res.get('pages')}\n"
             f"Чанков: {res.get('chunks')}\n"
             f"Файл: {res.get('file')}",
-            parse_mode="HTML"
+            parse_mode="HTML",
         )
     except Exception as e:
         await m.answer(f"Ошибка при индексации: {e}", parse_mode="HTML")
     finally:
         await state.clear()
 
+
 @router.message(AddDoc.waiting_file)
 async def not_file(m: Message):
     await m.answer("Пришлите, пожалуйста, PDF-файл документом.", parse_mode="HTML")
 
+
 # -------------------- команды админа --------------------
 @router.message(CommandStart())
 async def cmd_start(m: Message):
-    if is_admin(m.from_user.id):
-        await m.answer(
-            "Здравствуйте! Отправьте вопрос — я пришлю найденные фрагменты текстом и приложу исходные файлы.\n"
-            "Команды:\n"
-            "• /help — показать список команд\n"
-            "• /clear_index — очистить локальный индекс Qdrant\n"
-            "• /ingest_teach — проиндексировать все файлы из папки teach/ (source_group=teach)",
-            reply_markup=admin_kb(), parse_mode="HTML"
-        )
-    else:
-        await m.answer(
-            "Здравствуйте! Отправьте свой вопрос — я пришлю найденные фрагменты из локальной базы и приложу файлы.\n"
-            "Напишите /help для списка команд.",
-            parse_mode="HTML"
-        )
+    await m.answer(
+        "Здравствуйте! Отправьте вопрос — я пришлю найденные фрагменты текстом и приложу исходные файлы.",
+        reply_markup=main_menu_kb(),
+        parse_mode="HTML",
+    )
 
-@router.message(Command('help'))
+
+@router.message(F.text == "Задать вопрос")
+async def ask_question(m: Message):
+    await m.answer("Введите текст вопроса.", parse_mode="HTML")
+
+
+@router.message(F.text == "Примеры запросов")
+async def examples(m: Message):
+    samples = [
+        "Как оформить приказ?",
+        "Требования к пожарной безопасности",
+        "Алгоритм приёма сотрудника",
+        "Порядок аттестации",
+        "Документы для проверки",
+    ]
+    await m.answer("\n".join(samples), parse_mode="HTML")
+
+
+@router.message(F.text == "Настройки источников")
+async def settings_sources(m: Message):
+    await m.answer("Настройки источников пока недоступны", parse_mode="HTML")
+
+
+@router.message(Command("help"))
 async def cmd_help(m: Message):
     is_adm = is_admin(m.from_user.id)
     text = (
@@ -248,34 +331,64 @@ async def cmd_help(m: Message):
     else:
         await m.answer(text, parse_mode="HTML")
 
+
 @router.message(Command("clear_index"))
 async def cmd_clear_index(m: Message):
     if not is_admin(m.from_user.id):
-        return await m.answer("Эта команда доступна только администратору.", parse_mode="HTML")
+        return await m.answer(
+            "Эта команда доступна только администратору.", parse_mode="HTML"
+        )
     try:
         cli = get_client()
         cols = [c.name for c in cli.get_collections().collections]
         if QDRANT_COLLECTION in cols:
             cli.delete_collection(QDRANT_COLLECTION)
-        await m.answer("Локальный индекс очищен. Можно загружать документы заново.", parse_mode="HTML")
+        await m.answer(
+            "Локальный индекс очищен. Можно загружать документы заново.",
+            parse_mode="HTML",
+        )
     except Exception as e:
         await m.answer(f"Не удалось очистить индекс: {e}", parse_mode="HTML")
+
 
 @router.message(Command("ingest_teach"))
 async def cmd_ingest_teach(m: Message):
     if not is_admin(m.from_user.id):
-        return await m.answer("Эта команда доступна только администратору.", parse_mode="HTML")
+        return await m.answer(
+            "Эта команда доступна только администратору.", parse_mode="HTML"
+        )
     if not os.path.isdir(TEACH_DIR):
-        return await m.answer(f"Папка '{TEACH_DIR}' не найдена. Создайте её и положите туда файлы.", parse_mode="HTML")
-    await m.answer(f"Начинаю индексацию файлов из {TEACH_DIR} (source_group=teach)…", parse_mode="HTML")
+        return await m.answer(
+            f"Папка '{TEACH_DIR}' не найдена. Создайте её и положите туда файлы.",
+            parse_mode="HTML",
+        )
+    await m.answer(
+        f"Начинаю индексацию файлов из {TEACH_DIR} (source_group=teach)…",
+        parse_mode="HTML",
+    )
     try:
         res = await ingest_path(TEACH_DIR, source_group="teach")
-        await m.answer(f"Готово. Файлов: {res.get('files')}, чанков: {res.get('chunks')}", parse_mode="HTML")
+        await m.answer(
+            f"Готово. Файлов: {res.get('files')}, чанков: {res.get('chunks')}",
+            parse_mode="HTML",
+        )
     except Exception as e:
         await m.answer(f"Ошибка при индексации teach/: {e}", parse_mode="HTML")
 
+
 # -------------------- обработка вопроса пользователя --------------------
-@router.message(F.text & ~F.text.in_({"➕ Добавить документ"}))
+@router.message(
+    F.text
+    & ~F.text.in_(
+        {
+            "➕ Добавить документ",
+            "Добавить документ",
+            "Задать вопрос",
+            "Примеры запросов",
+            "Настройки источников",
+        }
+    )
+)
 async def handle_question(m: Message):
     q = m.text.strip()
 
@@ -284,8 +397,11 @@ async def handle_question(m: Message):
 
     # 0) БД: логируем пользователя и вопрос
     from db_local import DB_PATH  # только ради удобной отладки
+
     tg = m.from_user
-    user_id = await asyncio.to_thread(upsert_user, tg.id, tg.username, tg.first_name, tg.last_name)
+    user_id = await asyncio.to_thread(
+        upsert_user, tg.id, tg.username, tg.first_name, tg.last_name
+    )
     question_id = await asyncio.to_thread(insert_question, user_id, q)
 
     # сообщение о ходе поиска
@@ -297,30 +413,43 @@ async def handle_question(m: Message):
     hits, diag = await retrieve_local_hits(q, top_k=5, prefer_spravochnik=False)
 
     # Логируем все оценки (принятые и отфильтрованные)
-    for payload, score in (diag.get("passed") or []):
+    for payload, score in diag.get("passed") or []:
         await asyncio.to_thread(log_answer_score, question_id, payload, score, True)
-    for payload, score in (diag.get("rejected") or []):
+    for payload, score in diag.get("rejected") or []:
         await asyncio.to_thread(log_answer_score, question_id, payload, score, False)
 
     if hits:
         await msg.edit_text("Нашёл ответы в локальной базе", parse_mode="HTML")
-        await asyncio.to_thread(mark_answered, question_id, "local")
-        pending_local[m.from_user.id] = hits
+        pending_local[m.from_user.id] = (question_id, hits)
         for idx, pl in enumerate(hits):
             topic = html.escape(pl.get("source") or "Источник")
             snippet = preview_from_payload(pl, q)
             kb = InlineKeyboardMarkup(
-                inline_keyboard=[[
-                    InlineKeyboardButton(text="Показать полностью", callback_data=f"show_local:{idx}"),
-                    InlineKeyboardButton(text="Скрыть", callback_data=f"hide_local:{idx}")
-                ]]
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="Показать полностью", callback_data=f"show_local:{idx}"
+                        ),
+                        InlineKeyboardButton(
+                            text="Скрыть", callback_data=f"hide_local:{idx}"
+                        ),
+                    ]
+                ]
             )
-            await m.answer(f"<b>{topic}</b>\n{snippet}", parse_mode="HTML", reply_markup=kb)
-        return
+            await m.answer(
+                f"<b>{topic}</b>\n{snippet}", parse_mode="HTML", reply_markup=kb
+            )
+        snippets = [pl.get("text", "") for pl in hits[:3]]
+        suff = await self_check_sufficiency(q, snippets)
+        if suff == "sufficient":
+            return
+        await m.answer(
+            "Контекст неполный, ищу дополнительно на сайте…", parse_mode="HTML"
+        )
 
     # локально пусто: определим причину для unanswered
     reason = "no_local_hits"
-    if (diag.get("rejected") and not diag.get("passed")):
+    if diag.get("rejected") and not diag.get("passed"):
         reason = "below_threshold"
     await asyncio.to_thread(log_unanswered, question_id, reason)
 
@@ -371,7 +500,11 @@ async def accept_local(cb: CallbackQuery):
     except Exception:
         await cb.answer()
         return
-    hits = pending_local.get(cb.from_user.id) or []
+    data = pending_local.get(cb.from_user.id)
+    if not data:
+        await cb.answer("Ответ не найден")
+        return
+    question_id, hits = data
     if idx < 0 or idx >= len(hits):
         await cb.answer("Ответ не найден")
         return
@@ -386,6 +519,16 @@ async def accept_local(cb: CallbackQuery):
     )
     if files:
         await send_files(cb.message, files, limit=3)
+    fb_kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="👍", callback_data=f"fb:+1:{question_id}"),
+                InlineKeyboardButton(text="👎", callback_data=f"fb:-1:{question_id}"),
+            ]
+        ]
+    )
+    await cb.message.answer("Был ли ответ полезен?", reply_markup=fb_kb)
+    await asyncio.to_thread(mark_answered, question_id, "local")
     await cb.answer()
     pending_local.pop(cb.from_user.id, None)
 
@@ -398,18 +541,33 @@ async def reject_local(cb: CallbackQuery):
         await cb.message.delete()
         await cb.answer()
         return
-    hits = pending_local.get(cb.from_user.id)
-    if hits and 0 <= idx < len(hits):
-        hits[idx] = None
+    data = pending_local.get(cb.from_user.id)
+    if data:
+        qid, hits = data
+        if 0 <= idx < len(hits):
+            hits[idx] = None
         if all(h is None for h in hits):
             pending_local.pop(cb.from_user.id, None)
     await cb.message.delete()
     await cb.answer()
 
+
+@router.callback_query(F.data.startswith("fb:"))
+async def feedback_handler(cb: CallbackQuery):
+    try:
+        _, score, qid = cb.data.split(":")
+        await asyncio.to_thread(log_feedback, int(qid), int(score), None)
+        await cb.answer("Спасибо")
+    except Exception:
+        await cb.answer()
+
+
 # -------------------- запуск --------------------
 async def main():
     init_db()  # создаём таблицы при старте
+    asyncio.create_task(start_watcher([TEACH_DIR, UPLOADS_DIR]))
     await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
     asyncio.run(main())

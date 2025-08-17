@@ -1,0 +1,13 @@
+version: '3.9'
+services:
+  bot:
+    build: .
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+    volumes:
+      - .:/app
+    depends_on:
+      - qdrant
+  qdrant:
+    image: qdrant/qdrant
+    restart: unless-stopped
