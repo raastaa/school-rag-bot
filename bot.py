@@ -18,12 +18,20 @@ if PROJECT_ROOT not in sys.path:
 # --- aiogram ---
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, FSInputFile
+from aiogram.types import (
+    Message,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    FSInputFile,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    CallbackQuery,
+)
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 
 # --- our modules ---
-from retrieval_local import retrieve_local
+from retrieval_local import retrieve_local, format_answer_from_payload
 from ingest.pdf_ingest import ingest_pdf           # админ: одиночный PDF
 from ingest.ingest_generic import ingest_path      # индексация папки (teach/)
 from store_qdrant import get_client                # /clear_index
@@ -49,6 +57,9 @@ bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 router = Router()
 dp.include_router(router)
+
+# Храним для пользователей список найденных локальных ответов
+pending_local: dict[int, dict] = {}
 
 # -------------------- вспомогалки UI/админ --------------------
 def is_admin(user_id: int) -> bool:
@@ -259,6 +270,18 @@ async def handle_question(m: Message):
         )
         if files:
             await send_files(m, files, limit=3)
+
+        payloads = [pl for pl, _ in (diag.get("passed") or [])]
+        pending_local[m.from_user.id] = {"hits": payloads, "index": 0}
+        if len(payloads) > 1:
+            kb = InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="не подходит", callback_data="next_local")]]
+            )
+            await m.answer(
+                "если ответ вам не подходит попробуйте поискать еще для этого нажмите кнопку ниже",
+                reply_markup=kb,
+                parse_mode="HTML",
+            )
         return
 
     # локально пусто: определим причину для unanswered
@@ -291,6 +314,39 @@ async def handle_question(m: Message):
 
     if web_results:
         await asyncio.to_thread(mark_answered, question_id, "web")
+
+
+@router.callback_query(F.data == "next_local")
+async def next_local(cb: CallbackQuery):
+    data = pending_local.get(cb.from_user.id)
+    hits = data.get("hits") if data else []
+    idx = (data.get("index") if data else 0) + 1
+    if idx >= len(hits):
+        await cb.answer("Больше ответов нет")
+        return
+    data["index"] = idx
+    pl = hits[idx]
+    msg_text, cites, files = await format_answer_from_payload(pl)
+    for chunk in _split_long(msg_text):
+        await cb.message.answer(chunk, parse_mode="HTML")
+    await cb.message.answer(
+        "Дополнительную информацию вы можете прочитать в файлах, прикрепленных ниже.",
+        parse_mode="HTML",
+    )
+    if files:
+        await send_files(cb.message, files, limit=3)
+    if idx + 1 < len(hits):
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="не подходит", callback_data="next_local")]]
+        )
+        await cb.message.answer(
+            "если ответ вам не подходит попробуйте поискать еще для этого нажмите кнопку ниже",
+            reply_markup=kb,
+            parse_mode="HTML",
+        )
+    else:
+        await cb.message.answer("Это последний ответ.", parse_mode="HTML")
+    await cb.answer()
 
 # -------------------- запуск --------------------
 async def main():

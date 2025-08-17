@@ -168,6 +168,71 @@ def extract_scored(hits: list) -> list[tuple[dict, float | None]]:
         out.append((getattr(h, "payload", None) or {}, getattr(h, "score", None)))
     return out
 
+
+async def format_answer_from_payload(pl: Dict) -> Tuple[str, List[Dict], List[str]]:
+    """Формирует ответ по данному payload (без поиска)."""
+    lines: List[str] = ["Информация найдена в локальной базе.\n"]
+    cites: List[Dict] = []
+    files_set = set()
+
+    path = pl.get("path")
+    center_id = pl.get("id")
+    doc_payloads = _collect_doc_points(path) if path else []
+
+    summary = ""
+    if path:
+        summary_text = ""
+        if pl.get("source_group") == "spravochnik":
+            summary_text = _expand_chapter(doc_payloads, center_id) or _expand_paragraph(doc_payloads, center_id)
+        else:
+            ordered = sorted(doc_payloads, key=_sort_key)
+            summary_text = "\n".join(p.get("text") or "" for p in ordered)
+        summary_raw = await _summarize_text(summary_text)
+        if summary_raw:
+            sr = summary_raw.strip()
+            lines_sr = sr.splitlines()
+            cleaned: List[str] = []
+            started = False
+            for line in lines_sr:
+                low = line.lower().lstrip()
+                if not started and (
+                    low.startswith("запрос:")
+                    or low.startswith("источник:")
+                    or low.startswith("общая информация:")
+                ):
+                    continue
+                cleaned.append(line)
+                started = True
+            sr = "\n".join(cleaned).strip()
+            sr = re.sub(r"(?i)введение:\s*", "", sr).strip()
+            marker_old = "Алгоритм действий:"
+            marker_new = "Примерный план действий:"
+            if marker_old in sr:
+                before, alg = sr.split(marker_old, 1)
+                before_html = _escape(before.strip())
+                alg_html = _escape(marker_new + "\n" + alg.strip())
+                prefix = f"{before_html}\n\n" if before_html else ""
+                summary = f"{prefix}<b>{alg_html}</b>"
+            else:
+                summary = _escape(sr)
+
+    if summary:
+        lines.append(summary)
+
+    cites.append(
+        {
+            "source": pl.get("source"),
+            "page_from": pl.get("page_from"),
+            "path": path,
+            "text": _neighbors_preview(doc_payloads, center_id),
+        }
+    )
+    if path:
+        files_set.add(path)
+
+    msg = "\n".join(lines).strip()
+    return msg, cites, list(files_set)
+
 async def retrieve_local(
     question: str,
     top_k: int = MAX_ITEMS,
@@ -210,65 +275,13 @@ async def retrieve_local(
             "passed": [], "rejected": extract_scored(rejected)
         }
 
-    lines: List[str] = ["Информация найдена в локальной базе.\n"]
-    cites: List[Dict] = []
-    files_set = set()
-
     h = passed[0]
     pl = h.payload or {}
-    path = pl.get("path")
-    center_id = pl.get("id") or str(h.id)
-    doc_payloads = _collect_doc_points(path) if path else []
-
-    summary = ""
-    if path:
-        summary_text = ""
-        if pl.get("source_group") == "spravochnik":
-            summary_text = _expand_chapter(doc_payloads, center_id) or _expand_paragraph(doc_payloads, center_id)
-        else:
-            ordered = sorted(doc_payloads, key=_sort_key)
-            summary_text = "\n".join(p.get("text") or "" for p in ordered)
-        summary_raw = await _summarize_text(summary_text)
-        if summary_raw:
-            sr = summary_raw.strip()
-            lines_sr = sr.splitlines()
-            cleaned: List[str] = []
-            started = False
-            for line in lines_sr:
-                low = line.lower().lstrip()
-                if not started:
-                    if low.startswith("запрос:") or low.startswith("источник:") or low.startswith("общая информация:"):
-                        continue
-                cleaned.append(line)
-                started = True
-            sr = "\n".join(cleaned).strip()
-            sr = re.sub(r"(?i)введение:\s*", "", sr).strip()
-            marker_old = "Алгоритм действий:"
-            marker_new = "Примерный план действий:"
-            if marker_old in sr:
-                before, alg = sr.split(marker_old, 1)
-                before_html = _escape(before.strip())
-                alg_html = _escape(marker_new + "\n" + alg.strip())
-                prefix = f"{before_html}\n\n" if before_html else ""
-                summary = f"{prefix}<b>{alg_html}</b>"
-            else:
-                summary = _escape(sr)
-
-    if summary:
-        lines.append(summary)
-
-    cites.append({
-        "source": pl.get("source"),
-        "page_from": pl.get("page_from"),
-        "path": path,
-        "text": _neighbors_preview(doc_payloads, center_id),
-    })
-    if path:
-        files_set.add(path)
-
-    msg = "\n".join(lines).strip()
+    if "id" not in pl:
+        pl["id"] = str(h.id)
+    msg, cites, files = await format_answer_from_payload(pl)
     diag = {
         "passed": extract_scored(passed),
         "rejected": extract_scored(rejected),
     }
-    return msg, cites, list(files_set), diag
+    return msg, cites, files, diag
