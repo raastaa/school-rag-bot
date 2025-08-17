@@ -55,7 +55,7 @@ from db_local import (
     log_feedback,
     set_question_mode,
     get_last_mode_for_user,
-    get_feedback_stats,
+    fetch_questions,
 )
 from gigachat_client import self_check_sufficiency
 from watcher import start_watcher
@@ -85,7 +85,7 @@ dp.include_router(router)
 dp.update.middleware(Throttle(0.7))
 
 # Храним для пользователей список найденных локальных ответов
-pending_local: dict[int, tuple[int, list[dict]]] = {}
+pending_local: dict[int, tuple[int, list[dict | None]]] = {}
 
 # Храним выбранный режим источников для каждого пользователя
 user_modes: dict[int, str] = {}
@@ -403,6 +403,7 @@ async def cmd_my_history(m: Message):
     else:
         await m.answer("У вас пока нет запросов.", parse_mode="HTML")
 
+
 @router.message(Command("clear_index"))
 async def cmd_clear_index(m: Message):
     if not is_admin(m.from_user.id):
@@ -502,7 +503,6 @@ async def handle_question(m: Message, state: FSMContext):
 
     data = await state.get_data()
     history: List[str] = data.get("history", [])
-    combined_q = "\n".join(history + [q]) if history else q
     history.append(q)
     await state.update_data(history=history[-HISTORY_LIMIT:])
 
@@ -590,7 +590,6 @@ async def handle_question(m: Message, state: FSMContext):
         if diag.get("rejected") and not diag.get("passed"):
             reason = "below_threshold"
         await asyncio.to_thread(log_unanswered, question_id, reason)
-
 
     # Этап 2 — сайт smp.edu.ru
     await msg.edit_text("Ищу на сайте smp.edu.ru…", parse_mode="HTML")
