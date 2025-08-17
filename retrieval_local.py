@@ -54,6 +54,8 @@ def select_chunks_mmr(
             val = lam * rel - (1.0 - lam) * div
             if val > best_val:
                 best, best_val = d, val
+        if best is None:
+            break
         selected.append(best)
         rest.remove(best)
     return selected
@@ -122,7 +124,6 @@ def _highlight_terms(text: str, query: str | None) -> str:
 def _block_header(pl: Dict) -> str:
     src = _escape(pl.get("source") or "Источник")
     p_from = pl.get("page_from")
-    group = _escape(pl.get("source_group") or "local")
     head = f"Информация найдена в файле <b>{src}</b>"
     if p_from:
         head += f" (стр. {p_from})"
@@ -425,8 +426,10 @@ async def retrieve_local_hits(
     question: str,
     top_k: int = MAX_ITEMS,
     prefer_spravochnik: bool = True,
+    mode: str | None = None,
 ) -> Tuple[List[Dict], Dict[str, list]]:
     """Возвращает список payload'ов релевантных чанков без форматирования."""
+    _ = mode  # параметр для совместимости интерфейса
     hyde_q = await generate_query_hyde(question, n=2)
     docs = await fused_search([question] + hyde_q, top_k=top_k)
     emb = GigaChatEmbedder()

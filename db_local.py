@@ -1,6 +1,8 @@
 # db_local.py
-import os, sqlite3, datetime
-from typing import Optional, Tuple, Dict, Any
+import os
+import sqlite3
+import datetime
+from typing import Optional
 
 DB_PATH = os.getenv("APP_DB_PATH", "./app.db")
 
@@ -253,6 +255,27 @@ def get_question_mode(question_id: int) -> str | None:
     try:
         cur = con.execute(
             "SELECT mode FROM question_modes WHERE question_id=?", (question_id,)
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+    finally:
+        con.close()
+
+
+def get_last_mode_for_user(user_id: int) -> str | None:
+    """Возвращает последний выбранный пользователем режим источников."""
+    con = _conn()
+    try:
+        cur = con.execute(
+            """
+            SELECT qm.mode
+            FROM question_modes qm
+            JOIN questions q ON q.id = qm.question_id
+            WHERE q.user_id=?
+            ORDER BY qm.updated_at DESC
+            LIMIT 1
+            """,
+            (user_id,),
         )
         row = cur.fetchone()
         return row[0] if row else None
