@@ -253,8 +253,11 @@ async def handle_question(m: Message):
     user_id = await asyncio.to_thread(upsert_user, tg.id, tg.username, tg.first_name, tg.last_name)
     question_id = await asyncio.to_thread(insert_question, user_id, q)
 
+    # сообщение о ходе поиска
+    msg = await m.answer("Ищу…", parse_mode="HTML")
+
     # Этап 1 — локальная база
-    await m.answer("Ищу по локальной базе…", parse_mode="HTML")
+    await msg.edit_text("Ищу по локальной базе…", parse_mode="HTML")
     hits, diag = await retrieve_local_hits(q, top_k=5, prefer_spravochnik=False)
 
     # Логируем все оценки (принятые и отфильтрованные)
@@ -264,6 +267,7 @@ async def handle_question(m: Message):
         await asyncio.to_thread(log_answer_score, question_id, payload, score, False)
 
     if hits:
+        await msg.edit_text("Нашёл ответы в локальной базе", parse_mode="HTML")
         await asyncio.to_thread(mark_answered, question_id, "local")
         pending_local[m.from_user.id] = hits
         for idx, pl in enumerate(hits):
@@ -283,11 +287,15 @@ async def handle_question(m: Message):
     await asyncio.to_thread(log_unanswered, question_id, reason)
 
     # Этап 2 — сайт smp.edu.ru
-    await m.answer("Ищу на сайте smp.edu.ru…", parse_mode="HTML")
+    await msg.edit_text("Ищу на сайте smp.edu.ru…", parse_mode="HTML")
     try:
         site_text, site_results = await retrieve_site_live(q, max_results=5)
     except Exception as e:
         site_text, site_results = (f"Ошибка поиска на сайте: {e}", [])
+    if site_results:
+        await msg.edit_text("Нашёл ответы на сайте smp.edu.ru", parse_mode="HTML")
+    else:
+        await msg.edit_text("На сайте smp.edu.ru ничего не найдено", parse_mode="HTML")
     for chunk in _split_long(site_text):
         await m.answer(chunk, parse_mode="HTML")
 
@@ -296,11 +304,15 @@ async def handle_question(m: Message):
         return  # есть выдача на этапе 2 → веб не запускаем
 
     # Этап 3 — интернет (только если 1 и 2 пусто)
-    await m.answer("Ищу в интернете…", parse_mode="HTML")
+    await msg.edit_text("Ищу в интернете…", parse_mode="HTML")
     try:
         web_text, web_results = await retrieve_web_live(q, max_results=5)
     except Exception as e:
         web_text, web_results = (f"Ошибка веб-поиска: {e}", [])
+    if web_results:
+        await msg.edit_text("Нашёл ответы в интернете", parse_mode="HTML")
+    else:
+        await msg.edit_text("В интернете ничего не найдено", parse_mode="HTML")
     for chunk in _split_long(web_text):
         await m.answer(chunk, parse_mode="HTML")
 
