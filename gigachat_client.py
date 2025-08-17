@@ -15,7 +15,7 @@
 
 import os
 import asyncio
-from typing import List, Sequence, Any, Optional, Literal
+from typing import List, Sequence, Any, Literal
 from dotenv import load_dotenv
 
 # официальный SDK
@@ -27,7 +27,6 @@ load_dotenv()
 
 class RateLimitError(RuntimeError):
     """Превышен лимит запросов к GigaChat."""
-
 
 
 CREDENTIALS = os.getenv("GIGACHAT_CREDENTIALS", "")
@@ -141,6 +140,8 @@ async def chat(prompt: str, timeout: int = 30) -> str:
                     await cli.aclose()
                 except Exception:
                     pass
+
+        return ""
 
 
 async def self_check_sufficiency(
