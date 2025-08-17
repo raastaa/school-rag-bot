@@ -1,4 +1,5 @@
 # bot.py
+# ruff: noqa: E402
 import os
 import sys
 import asyncio
@@ -396,7 +397,7 @@ async def handle_question(m: Message):
     pending_local.pop(m.from_user.id, None)
 
     # 0) БД: логируем пользователя и вопрос
-    from db_local import DB_PATH  # только ради удобной отладки
+    from db_local import DB_PATH  # noqa: F401  # только ради удобной отладки
 
     tg = m.from_user
     user_id = await asyncio.to_thread(
@@ -557,9 +558,13 @@ async def feedback_handler(cb: CallbackQuery):
     try:
         _, score, qid = cb.data.split(":")
         await asyncio.to_thread(log_feedback, int(qid), int(score), None)
+        try:
+            await cb.message.edit_reply_markup()
+        except Exception:
+            await cb.message.delete()
         await cb.answer("Спасибо")
     except Exception:
-        await cb.answer()
+        await cb.answer("Не удалось сохранить отзыв", show_alert=True)
 
 
 # -------------------- запуск --------------------
