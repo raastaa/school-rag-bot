@@ -256,9 +256,10 @@ async def got_file(m: Message, state: FSMContext):
         "uploads", doc.file_name or f"upload_{doc.file_unique_id}.pdf"
     )
     await m.answer(
-        "Файл получен, начинаю индексацию… (это может занять несколько минут)",
+        "Файл получен, обрабатываю документы… (это может занять несколько минут)",
         parse_mode="HTML",
     )
+    await bot.send_chat_action(m.chat.id, ChatAction.UPLOAD_DOCUMENT)
     try:
         await bot.download(doc, destination=file_path)
         res = await ingest_pdf(file_path, title=title, source_label=doc.file_name)
@@ -271,8 +272,11 @@ async def got_file(m: Message, state: FSMContext):
             f"Файл: {res.get('file')}",
             parse_mode="HTML",
         )
-    except Exception as e:
-        await m.answer(f"Ошибка при индексации: {e}", parse_mode="HTML")
+    except Exception:
+        await m.answer(
+            "Не удалось обработать документ. Убедитесь, что это PDF-файл и попробуйте снова.",
+            parse_mode="HTML",
+        )
     finally:
         await state.clear()
 
@@ -366,14 +370,19 @@ async def cmd_ingest_teach(m: Message):
         f"Начинаю индексацию файлов из {TEACH_DIR} (source_group=teach)…",
         parse_mode="HTML",
     )
+    await m.answer("Обрабатываю документы…", parse_mode="HTML")
+    await bot.send_chat_action(m.chat.id, ChatAction.UPLOAD_DOCUMENT)
     try:
         res = await ingest_path(TEACH_DIR, source_group="teach")
         await m.answer(
             f"Готово. Файлов: {res.get('files')}, чанков: {res.get('chunks')}",
             parse_mode="HTML",
         )
-    except Exception as e:
-        await m.answer(f"Ошибка при индексации teach/: {e}", parse_mode="HTML")
+    except Exception:
+        await m.answer(
+            "Не удалось обработать документы из teach/. Проверьте файлы и попробуйте снова.",
+            parse_mode="HTML",
+        )
 
 
 # -------------------- обработка вопроса пользователя --------------------
@@ -410,7 +419,18 @@ async def handle_question(m: Message):
     # Этап 1 — локальная база
     await m.answer("Ищу по локальной базе…", parse_mode="HTML")
     await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
-    hits, diag = await retrieve_local_hits(q, top_k=5, prefer_spravochnik=False)
+    try:
+        hits, diag = await retrieve_local_hits(q, top_k=5, prefer_spravochnik=False)
+    except Exception:
+        await msg.edit_text(
+            "Произошла ошибка при поиске по локальной базе",
+            parse_mode="HTML",
+        )
+        await m.answer(
+            "Попробуйте позже или загрузите необходимые документы.",
+            parse_mode="HTML",
+        )
+        return
 
     # Логируем все оценки (принятые и отфильтрованные)
     for payload, score in diag.get("passed") or []:
@@ -455,10 +475,14 @@ async def handle_question(m: Message):
 
     # Этап 2 — сайт smp.edu.ru
     await msg.edit_text("Ищу на сайте smp.edu.ru…", parse_mode="HTML")
+    await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
     try:
         site_text, site_results = await retrieve_site_live(q, max_results=5)
-    except Exception as e:
-        site_text, site_results = (f"Ошибка поиска на сайте: {e}", [])
+    except Exception:
+        site_text, site_results = (
+            "Не удалось выполнить поиск на сайте. Попробуйте позже.",
+            [],
+        )
     if site_results:
         await msg.edit_text("Нашёл ответы на сайте smp.edu.ru", parse_mode="HTML")
     else:
@@ -475,8 +499,11 @@ async def handle_question(m: Message):
     await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
     try:
         web_text, web_results = await retrieve_web_live(q, max_results=5)
-    except Exception as e:
-        web_text, web_results = (f"Ошибка веб-поиска: {e}", [])
+    except Exception:
+        web_text, web_results = (
+            "Не удалось выполнить веб-поиск. Попробуйте позже.",
+            [],
+        )
     if web_results:
         await msg.edit_text("Нашёл ответы в интернете", parse_mode="HTML")
     else:
