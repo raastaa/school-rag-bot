@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS users (
     username      TEXT,
     first_name    TEXT,
     last_name     TEXT,
+    phone         TEXT,
     created_at    TEXT NOT NULL,
     last_seen     TEXT NOT NULL,
     UNIQUE(tg_id)
@@ -101,6 +102,7 @@ def upsert_user(
     username: Optional[str],
     first_name: Optional[str],
     last_name: Optional[str],
+    phone: Optional[str] = None,
 ) -> int:
     now = datetime.datetime.utcnow().isoformat()
     con = _conn()
@@ -111,13 +113,16 @@ def upsert_user(
         if row:
             user_id = row[0]
             cur.execute(
-                "UPDATE users SET username=?, first_name=?, last_name=?, last_seen=? WHERE id=?",
-                (username, first_name, last_name, now, user_id),
+                "UPDATE users SET username=?, first_name=?, last_name=?, phone=?, last_seen=? WHERE id=?",
+                (username, first_name, last_name, phone, now, user_id),
             )
         else:
             cur.execute(
-                "INSERT INTO users (tg_id, username, first_name, last_name, created_at, last_seen) VALUES (?,?,?,?,?,?)",
-                (tg_id, username, first_name, last_name, now, now),
+                (
+                    "INSERT INTO users (tg_id, username, first_name, last_name, phone, created_at, last_seen) "
+                    "VALUES (?,?,?,?,?,?,?)"
+                ),
+                (tg_id, username, first_name, last_name, phone, now, now),
             )
             user_id = cur.lastrowid
         con.commit()
@@ -138,6 +143,19 @@ def insert_question(user_id: int, question: str) -> int:
         qid = cur.lastrowid
         con.commit()
         return qid
+    finally:
+        con.close()
+
+
+def fetch_user_questions(user_id: int, limit: int) -> list[str]:
+    con = _conn()
+    try:
+        cur = con.execute(
+            "SELECT question FROM questions WHERE user_id=? ORDER BY created_at DESC LIMIT ?",
+            (user_id, limit),
+        )
+        rows = cur.fetchall()
+        return [row[0] for row in rows]
     finally:
         con.close()
 
@@ -204,6 +222,24 @@ def log_feedback(question_id: int, score: int, comment: str | None = None) -> No
     finally:
         con.close()
 
+def get_feedback_by_source() -> Dict[str, Tuple[float, int]]:
+    """Возвращает средний рейтинг по каждому источнику."""
+    con = _conn()
+    try:
+        cur = con.execute(
+            """
+            SELECT a.source, AVG(f.score) AS avg_score, COUNT(*) as cnt
+            FROM feedback f
+            JOIN answer_scores a ON f.question_id = a.question_id
+            WHERE a.source IS NOT NULL
+            GROUP BY a.source
+            """
+        )
+        rows = cur.fetchall()
+        return {row[0]: (row[1], row[2]) for row in rows if row[0]}
+    finally:
+        con.close()
+
 
 def upsert_file_index(path: str, size: int, mtime: float, sha256: str) -> None:
     con = _conn()
@@ -260,8 +296,6 @@ def get_question_mode(question_id: int) -> str | None:
         return row[0] if row else None
     finally:
         con.close()
-
-
 def get_last_mode_for_user(user_id: int) -> str | None:
     """Возвращает последний выбранный пользователем режим источников."""
     con = _conn()
@@ -278,6 +312,5 @@ def get_last_mode_for_user(user_id: int) -> str | None:
             (user_id,),
         )
         row = cur.fetchone()
-        return row[0] if row else None
     finally:
         con.close()
