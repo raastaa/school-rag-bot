@@ -51,6 +51,7 @@ from db_local import (
     log_unanswered,
     log_answer_score,
     log_feedback,
+    get_feedback_stats,
 )
 from gigachat_client import self_check_sufficiency
 from watcher import start_watcher
@@ -326,6 +327,7 @@ async def cmd_help(m: Message):
         text += (
             "\n• /clear_index — очистить локальный индекс Qdrant"
             "\n• /ingest_teach — проиндексировать все файлы из папки teach/ (source_group=teach)"
+            "\n• /feedback_stats — показать статистику обратной связи"
         )
         await m.answer(text, reply_markup=admin_kb(), parse_mode="HTML")
     else:
@@ -374,6 +376,21 @@ async def cmd_ingest_teach(m: Message):
         )
     except Exception as e:
         await m.answer(f"Ошибка при индексации teach/: {e}", parse_mode="HTML")
+
+
+@router.message(Command("feedback_stats"))
+async def cmd_feedback_stats(m: Message):
+    if not is_admin(m.from_user.id):
+        return await m.answer(
+            "Эта команда доступна только администратору.", parse_mode="HTML"
+        )
+    stats = await asyncio.to_thread(get_feedback_stats)
+    text = (
+        "Статистика обратной связи:\n"
+        f"👍 {stats['positive']}\n"
+        f"👎 {stats['negative']}"
+    )
+    await m.answer(text, parse_mode="HTML")
 
 
 # -------------------- обработка вопроса пользователя --------------------
