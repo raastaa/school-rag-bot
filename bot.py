@@ -276,9 +276,10 @@ async def got_file(m: Message, state: FSMContext):
         "uploads", doc.file_name or f"upload_{doc.file_unique_id}.pdf"
     )
     await m.answer(
-        "Файл получен, начинаю индексацию… (это может занять несколько минут)",
+        "Файл получен, обрабатываю документы… (это может занять несколько минут)",
         parse_mode="HTML",
     )
+    await bot.send_chat_action(m.chat.id, ChatAction.UPLOAD_DOCUMENT)
     try:
         await bot.download(doc, destination=file_path)
         res = await ingest_pdf(file_path, title=title, source_label=doc.file_name)
@@ -291,8 +292,11 @@ async def got_file(m: Message, state: FSMContext):
             f"Файл: {res.get('file')}",
             parse_mode="HTML",
         )
-    except Exception as e:
-        await m.answer(f"Ошибка при индексации: {e}", parse_mode="HTML")
+    except Exception:
+        await m.answer(
+            "Не удалось обработать документ. Убедитесь, что это PDF-файл и попробуйте снова.",
+            parse_mode="HTML",
+        )
     finally:
         await state.clear()
 
@@ -433,14 +437,19 @@ async def cmd_ingest_teach(m: Message):
         f"Начинаю индексацию файлов из {TEACH_DIR} (source_group=teach)…",
         parse_mode="HTML",
     )
+    await m.answer("Обрабатываю документы…", parse_mode="HTML")
+    await bot.send_chat_action(m.chat.id, ChatAction.UPLOAD_DOCUMENT)
     try:
         res = await ingest_path(TEACH_DIR, source_group="teach")
         await m.answer(
             f"Готово. Файлов: {res.get('files')}, чанков: {res.get('chunks')}",
             parse_mode="HTML",
         )
-    except Exception as e:
-        await m.answer(f"Ошибка при индексации teach/: {e}", parse_mode="HTML")
+    except Exception:
+        await m.answer(
+            "Не удалось обработать документы из teach/. Проверьте файлы и попробуйте снова.",
+            parse_mode="HTML",
+        )
 
 
 @router.message(Command("query_history"))
@@ -516,21 +525,26 @@ async def handle_question(m: Message, state: FSMContext):
     msg = await m.answer("Ищу…", parse_mode="HTML")
 
     # Этап 1 — локальная база
-    hits: list[dict] = []
-    diag: dict[str, list] = {}
-    if mode in {"all", "local_site", "local"}:
-        await m.answer("Ищу по локальной базе…", parse_mode="HTML")
-        await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
-        hits, diag = await retrieve_local_hits(
-            q, top_k=5, prefer_spravochnik=False, mode=mode
+    await m.answer("Ищу по локальной базе…", parse_mode="HTML")
+    await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
+    try:
+        hits, diag = await retrieve_local_hits(q, top_k=5, prefer_spravochnik=False)
+    except Exception:
+        await msg.edit_text(
+            "Произошла ошибка при поиске по локальной базе",
+            parse_mode="HTML",
         )
-        # Логируем все оценки (принятые и отфильтрованные)
-        for payload, score in diag.get("passed") or []:
-            await asyncio.to_thread(log_answer_score, question_id, payload, score, True)
-        for payload, score in diag.get("rejected") or []:
-            await asyncio.to_thread(
-                log_answer_score, question_id, payload, score, False
-            )
+        await m.answer(
+            "Попробуйте позже или загрузите необходимые документы.",
+            parse_mode="HTML",
+        )
+        return
+
+    # Логируем все оценки (принятые и отфильтрованные)
+    for payload, score in diag.get("passed") or []:
+        await asyncio.to_thread(log_answer_score, question_id, payload, score, True)
+    for payload, score in diag.get("rejected") or []:
+        await asyncio.to_thread(log_answer_score, question_id, payload, score, False)
 
     if hits:
         await msg.edit_text("Нашёл ответы в локальной базе", parse_mode="HTML")
@@ -579,40 +593,36 @@ async def handle_question(m: Message, state: FSMContext):
 
 
     # Этап 2 — сайт smp.edu.ru
-    site_results: list[dict] = []
-    if mode in {"all", "local_site"}:
-        await msg.edit_text("Ищу на сайте smp.edu.ru…", parse_mode="HTML")
-        try:
-            site_text, site_results = await retrieve_site_live(
-                q, max_results=5, mode=mode
-            )
-        except Exception as e:
-            site_text, site_results = (f"Ошибка поиска на сайте: {e}", [])
-        if site_results:
-            await msg.edit_text("Нашёл ответы на сайте smp.edu.ru", parse_mode="HTML")
-        else:
-            await msg.edit_text(
-                "На сайте smp.edu.ru ничего не найдено", parse_mode="HTML"
-            )
-        for chunk in _split_long(site_text):
-            await m.answer(chunk, parse_mode="HTML")
-        if site_results:
-            await asyncio.to_thread(mark_answered, question_id, "site")
-            return
-    if mode == "local_site":
-        await m.answer(
-            "Не удалось найти ответ; уточните вопрос или загрузите документы",
-            parse_mode="HTML",
+    await msg.edit_text("Ищу на сайте smp.edu.ru…", parse_mode="HTML")
+    await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
+    try:
+        site_text, site_results = await retrieve_site_live(q, max_results=5)
+    except Exception:
+        site_text, site_results = (
+            "Не удалось выполнить поиск на сайте. Попробуйте позже.",
+            [],
         )
-        return
+    if site_results:
+        await msg.edit_text("Нашёл ответы на сайте smp.edu.ru", parse_mode="HTML")
+    else:
+        await msg.edit_text("На сайте smp.edu.ru ничего не найдено", parse_mode="HTML")
+    for chunk in _split_long(site_text):
+        await m.answer(chunk, parse_mode="HTML")
+
+    if site_results:
+        await asyncio.to_thread(mark_answered, question_id, "site")
+        return  # есть выдача на этапе 2 → веб не запускаем
 
     # Этап 3 — интернет (запускаем всегда, если нет локальных совпадений)
     await m.answer("Ищу в интернете…", parse_mode="HTML")
     await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
     try:
-        web_text, web_results = await retrieve_web_live(q, max_results=5, mode=mode)
-    except Exception as e:
-        web_text, web_results = (f"Ошибка веб-поиска: {e}", [])
+        web_text, web_results = await retrieve_web_live(q, max_results=5)
+    except Exception:
+        web_text, web_results = (
+            "Не удалось выполнить веб-поиск. Попробуйте позже.",
+            [],
+        )
     if web_results:
         await msg.edit_text("Нашёл ответы в интернете", parse_mode="HTML")
     else:
