@@ -50,18 +50,22 @@ def upsert_chunks(vectors: List[List[float]], payloads: List[Dict[str, Any]]):
 
 
 def search(
-    query_vector: List[float], top_k: int = 5, source_filter: Optional[str] = None
+    query_vector: List[float],
+    top_k: int = 5,
+    source_filter: Optional[str] = None,
+    doc_tag: Optional[str] = None,
 ):
     cli = get_client()
     flt = None
+    must: List[FieldCondition] = []
     if source_filter:
-        flt = Filter(
-            must=[
-                FieldCondition(
-                    key="source_group", match=MatchValue(value=source_filter)
-                )
-            ]
+        must.append(
+            FieldCondition(key="source_group", match=MatchValue(value=source_filter))
         )
+    if doc_tag:
+        must.append(FieldCondition(key="doc_tag", match=MatchValue(value=doc_tag)))
+    if must:
+        flt = Filter(must=must)
     res = cli.search(
         collection_name=QDRANT_COLLECTION,
         query_vector=query_vector,

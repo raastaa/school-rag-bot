@@ -171,6 +171,45 @@ async def generate_query_hyde(query: str, n: int = 3) -> list[str]:
     return out
 
 
+async def answer_from_director_snippets(
+    query: str,
+    snippets: list[dict],
+    mode: Literal["brief_plus", "detailed"],
+) -> str:
+    """Generate answer strictly from director handbook snippets."""
+    system = (
+        "НЕЛЬЗЯ использовать внешние знания. ТОЛЬКО фрагменты. "
+        "Если факта нет — напиши 'в предоставленном фрагменте не указано'."
+    )
+    if mode == "brief_plus":
+        directive = (
+            "Отвечай только фактами. 5–9 пунктов по делу, затем 2–3 цитаты "
+            "с указанием источника и список из 4–6 источников." 
+            "Запрет на воду."
+        )
+    else:
+        directive = (
+            "Секции: Краткий вывод; Доказательная база (цитаты); "
+            "Структура приказа (чек-лист); Шаблон-скелет приказа; Источники. "
+            "Сначала цитаты, потом выводы."
+        )
+    blocks: list[str] = []
+    for sn in snippets:
+        src = sn.get("source", {})
+        title = src.get("title") or ""
+        pages = ""
+        if src.get("page_from"):
+            pages = f"стр. {src.get('page_from')}-{src.get('page_to')}"
+        head = src.get("heading_path") or ""
+        meta = ", ".join(x for x in [title, pages, head] if x)
+        blocks.append(f"[{meta}]\n{sn.get('text','')}")
+    joined = "\n\n".join(blocks)
+    prompt = (
+        f"{system}\nВопрос: {query}\n\nФрагменты:\n{joined}\n\n{directive}"
+    )
+    return await chat(prompt, timeout=60)
+
+
 # Prompt templates for different answer modes
 PROMPT_TEMPLATES = {
     "brief_plus": (
@@ -196,6 +235,7 @@ __all__ = [
     "chat",
     "self_check_sufficiency",
     "generate_query_hyde",
+    "answer_from_director_snippets",
     "PROMPT_TEMPLATES",
     "RateLimitError",
 ]

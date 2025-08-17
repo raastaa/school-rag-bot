@@ -170,7 +170,11 @@ def read_txt(file_path: str) -> str:
 
 
 async def ingest_file(
-    file_path: str, title: str | None = None, source_group: str = SOURCE_GROUP_DEFAULT
+    file_path: str,
+    title: str | None = None,
+    source_group: str = SOURCE_GROUP_DEFAULT,
+    doc_tag: str | None = None,
+    heading_path: str | None = None,
 ) -> Dict[str, Any]:
     """
     Индексирует один файл в Qdrant. Поддержка: .pdf .docx .html/.htm .txt
@@ -261,12 +265,14 @@ async def ingest_file(
     payloads: List[Dict[str, Any]] = []
     seq = 0
     doc_title = title or os.path.basename(file_path)
+    token_total = 0
 
     for text_c, p_from, p_to in chunks:
         h = hashlib.sha256(text_c.strip().encode("utf-8")).hexdigest()
         if has_chunk_hash(h):
             continue
         save_chunk_hash(h, abs_path, seq)
+        tok = count_tokens(text_c)
         payloads.append(
             {
                 "id": str(uuid.uuid4()),
@@ -278,11 +284,14 @@ async def ingest_file(
                 "page_to": p_to,
                 "path": abs_path,
                 "type": ext.lstrip("."),
-                "token_count": count_tokens(text_c),
+                "token_count": tok,
                 "text": text_c[:1000],
+                "doc_tag": doc_tag,
+                "heading_path": heading_path,
             }
         )
         texts.append(text_c)
+        token_total += tok
         seq += 1
 
     # 4) эмбеддинги + upsert в Qdrant
@@ -300,6 +309,9 @@ async def ingest_file(
         "pages": pages,
         "file": abs_path,
         "source_group": source_group,
+        "doc_tag": doc_tag,
+        "heading_path": heading_path,
+        "token_total": token_total,
     }
 
 
@@ -316,6 +328,7 @@ async def ingest_path(
         ".xlsx",
         ".xlsm",
     ),
+    doc_tag: str | None = None,
 ) -> Dict[str, int]:
     """
     Рекурсивно обходит директорию и индексирует все поддерживаемые файлы.
@@ -324,12 +337,20 @@ async def ingest_path(
     total_files = 0
     total_chunks = 0
     for dirpath, _, filenames in os.walk(root):
+        rel = os.path.relpath(dirpath, root)
+        heading_path = None if rel in ("", ".") else " > ".join(rel.split(os.sep))
         for name in filenames:
             if os.path.splitext(name)[1].lower() in exts:
                 total_files += 1
                 fp = os.path.join(dirpath, name)
                 try:
-                    res = await ingest_file(fp, title=name, source_group=source_group)
+                    res = await ingest_file(
+                        fp,
+                        title=name,
+                        source_group=source_group,
+                        doc_tag=doc_tag,
+                        heading_path=heading_path,
+                    )
                     total_chunks += res.get("chunks", 0)
                     print(
                         f"[OK] {name}: chunks={res.get('chunks')} pages={res.get('pages')}"
@@ -353,8 +374,9 @@ if __name__ == "__main__":
         default=SOURCE_GROUP_DEFAULT,
         help="source_group для Qdrant (по умолчанию zabedu)",
     )
+    ap.add_argument("--doc-tag", default=None, help="doc_tag payload value")
     args = ap.parse_args()
 
     print("Indexing:", args.path, "group:", args.group)
-    res = asyncio.run(ingest_path(args.path, source_group=args.group))
+    res = asyncio.run(ingest_path(args.path, source_group=args.group, doc_tag=args.doc_tag))
     print("Done:", res)

@@ -26,6 +26,14 @@ from config import (
     PERCENTILE_CUT,
     MIN_RESULTS_FLOOR,
     LOCAL_SEARCH_CACHE_TTL_SEC,
+    DIRECTOR_TOP_K_INITIAL,
+    DIRECTOR_NEIGHBOR_RADIUS,
+    DIRECTOR_PERCENTILE_CUT,
+    DIRECTOR_MIN_RESULTS_FLOOR,
+    DIRECTOR_MMR_LAMBDA,
+    DIRECTOR_RERANK_ALPHA,
+    DIRECTOR_HYDE_N,
+    DIRECTOR_MIN_UNIQUE_SECTIONS,
 )
 
 # Параметры
@@ -40,6 +48,11 @@ RERANK_ENABLED = os.getenv("RERANK_ENABLED", "true").lower() not in {"0", "false
 SUMMARY_LIMIT = 1000
 
 logger = logging.getLogger(__name__)
+
+DIRECTOR_KEYWORDS_RE = re.compile(
+    r"(приказ|приказы|приказываю|распоряжение|бланк|регистрация|книга приказов|основание|контроль за исполнением|дата|номер|заголовок|место издания|подпись)",
+    re.IGNORECASE,
+)
 
 
 # --- feedback stats cache ---
@@ -602,3 +615,88 @@ async def retrieve_local_hits(
     diag = {"passed": passed_diag, "rejected": rejected_diag}
     logger.info("retrieve_local_hits finished")
     return passed_payloads, summary, diag
+
+
+async def retrieve_director_strict(
+    query: str,
+    k_initial: int = DIRECTOR_TOP_K_INITIAL,
+    neighbor_radius: int = DIRECTOR_NEIGHBOR_RADIUS,
+) -> List[DocChunk]:
+    """Specialised retrieval limited to the director's handbook."""
+    _ = neighbor_radius  # reserved for future windowing
+    logger.info("retrieve_director_strict: %s", query)
+    hyde_q = await generate_query_hyde(query, n=DIRECTOR_HYDE_N)
+    emb = GigaChatEmbedder()
+    vecs = await emb.embed([query] + hyde_q)
+    docs: Dict[str, DocChunk] = {}
+    for vec in vecs:
+        hits = qsearch(vec, top_k=k_initial * 2, doc_tag="director_handbook")
+        for h in hits:
+            pl = h.payload or {}
+            if pl.get("doc_tag") != "director_handbook":
+                continue
+            if "id" not in pl:
+                pl["id"] = str(h.id)
+            if pl["id"] not in docs:
+                docs[pl["id"]] = DocChunk(
+                    id=pl["id"],
+                    doc_id=pl.get("doc_id"),
+                    path=pl.get("path"),
+                    page_from=pl.get("page_from"),
+                    page_to=pl.get("page_to"),
+                    text=pl.get("text", ""),
+                    vector=h.vector or [],
+                    score=h.score or 0.0,
+                    section=pl.get("section"),
+                    payload=pl,
+                )
+            else:
+                if h.score and h.score > docs[pl["id"]].score:
+                    docs[pl["id"]].score = h.score
+    all_docs = list(docs.values())
+    if not all_docs:
+        logger.info("director_handbook: no hits, fallback to default")
+        return []
+    if RERANK_ENABLED:
+        all_docs = rerank_combined(query, all_docs, alpha=DIRECTOR_RERANK_ALPHA)
+    qvec = np.array(vecs[0])
+    sel = select_chunks_mmr(qvec, all_docs, k=k_initial, lam=DIRECTOR_MMR_LAMBDA)
+    seen = {
+        d.payload.get("heading_path")
+        for d in sel
+        if d.payload.get("heading_path")
+    }
+    if len(seen) < DIRECTOR_MIN_UNIQUE_SECTIONS:
+        for d in all_docs:
+            sec = d.payload.get("heading_path")
+            if sec not in seen:
+                sel.append(d)
+                seen.add(sec)
+            if len(seen) >= DIRECTOR_MIN_UNIQUE_SECTIONS:
+                break
+    unique: List[DocChunk] = []
+    for d in sel:
+        dv = np.array(d.vector)
+        if any(_cosine(dv, np.array(u.vector)) > 0.95 for u in unique):
+            continue
+        unique.append(d)
+    sel = unique
+    if sel:
+        scores = np.array([d.score for d in sel])
+        perc = float(np.percentile(scores, DIRECTOR_PERCENTILE_CUT * 100))
+        sel = [d for d in sel if d.score >= perc]
+        if len(sel) < DIRECTOR_MIN_RESULTS_FLOOR:
+            sel = sorted(unique, key=lambda d: d.score, reverse=True)[
+                :DIRECTOR_MIN_RESULTS_FLOOR
+            ]
+    filtered = [d for d in sel if DIRECTOR_KEYWORDS_RE.search(d.text)]
+    if len(filtered) >= DIRECTOR_MIN_RESULTS_FLOOR:
+        sel = filtered
+    logger.info(
+        "director_handbook retrieval: k_initial=%d unique_sections=%d percent_cut=%.2f mmr_lambda=%.2f",
+        k_initial,
+        len({d.payload.get('heading_path') for d in sel if d.payload.get('heading_path')}),
+        DIRECTOR_PERCENTILE_CUT,
+        DIRECTOR_MMR_LAMBDA,
+    )
+    return sel
