@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 import numpy as np
 from rank_bm25 import BM25Okapi
+import logging
 
 from gigachat_client import GigaChatEmbedder, chat, generate_query_hyde
 from store_qdrant import search as qsearch, get_client
@@ -24,6 +25,8 @@ QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "school_docs")
 RERANK_ENABLED = os.getenv("RERANK_ENABLED", "true").lower() not in {"0", "false"}
 # Максимальная длина текста резюме
 SUMMARY_LIMIT = 1000
+
+logger = logging.getLogger(__name__)
 
 
 # --- feedback stats cache ---
@@ -110,10 +113,13 @@ def rerank_combined(query: str, docs: List[Doc], alpha: float = 0.7) -> List[Doc
 
 
 async def fused_search(queries: List[str], top_k: int = 5) -> List[Doc]:
+    logger.info("Starting fused search for %d queries, top_k=%d", len(queries), top_k)
     emb = GigaChatEmbedder()
+    logger.info("Embedding queries")
     vecs = await emb.embed(queries)
     docs: Dict[str, Doc] = {}
     for q, vec in zip(queries, vecs):
+        logger.info("Searching Qdrant for query: %s", q)
         hits = qsearch(vec, top_k=top_k * 2)
         for h in hits:
             pl = h.payload or {}
@@ -128,10 +134,13 @@ async def fused_search(queries: List[str], top_k: int = 5) -> List[Doc]:
                     payload=pl,
                 )
     out = list(docs.values())
+    logger.info("Collected %d documents before feedback adjustment", len(out))
     for d in out:
         d.score = _apply_feedback(d.score, d.payload.get("source"))
     if RERANK_ENABLED:
+        logger.info("Reranking %d documents", len(out))
         out = rerank_combined(queries[0], out)
+    logger.info("Fused search returning %d documents", len(out))
     return out
 
 
@@ -490,10 +499,21 @@ async def retrieve_local_hits(
 ) -> Tuple[List[Dict], Dict[str, list]]:
     """Возвращает список payload'ов релевантных чанков без форматирования."""
     _ = mode  # параметр для совместимости интерфейса
+    logger.info(
+        "retrieve_local_hits: question='%s', top_k=%d, prefer_spravochnik=%s",
+        question,
+        top_k,
+        prefer_spravochnik,
+    )
+    logger.info("Generating HYDE queries")
     hyde_q = await generate_query_hyde(question, n=2)
+    logger.info("HYDE queries: %s", hyde_q)
+    logger.info("Running fused search")
     docs = await fused_search([question] + hyde_q, top_k=top_k)
     emb = GigaChatEmbedder()
+    logger.info("Embedding original question for MMR")
     qvec = np.array((await emb.embed([question]))[0])
+    logger.info("Selecting top %d chunks with MMR", top_k)
     docs_sel = select_chunks_mmr(qvec, docs, k=top_k)
 
     passed_payloads, passed_diag, rejected_diag = [], [], []
@@ -506,6 +526,14 @@ async def retrieve_local_hits(
         else:
             rejected_diag.append((pl, sc))
 
+    logger.info(
+        "Documents passed threshold %.2f: %d/%d",
+        THRESHOLD,
+        len(passed_payloads),
+        len(docs_sel),
+    )
+    logger.info("Summarizing documents")
     summary = await summarize([pl.get("text", "") for pl in passed_payloads])
     diag = {"passed": passed_diag, "rejected": rejected_diag}
+    logger.info("retrieve_local_hits finished")
     return passed_payloads, summary, diag
