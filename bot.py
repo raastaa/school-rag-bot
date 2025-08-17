@@ -28,6 +28,7 @@ from aiogram.types import (
     InlineKeyboardButton,
     CallbackQuery,
 )
+from aiogram.enums import ChatAction
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 
@@ -141,6 +142,7 @@ async def send_files(m: Message, paths: List[str], limit: int = 3):
                 else:
                     await m.answer("Не удалось преобразовать DOCX в PDF, отправляю исходный файл.", parse_mode="HTML")
 
+            await bot.send_chat_action(m.chat.id, ChatAction.UPLOAD_DOCUMENT)
             await m.answer_document(FSInputFile(to_send_path), caption=caption)
             count += 1
         except Exception:
@@ -151,18 +153,29 @@ class AddDoc(StatesGroup):
     waiting_title = State()
     waiting_file = State()
 
+@router.message(Command('cancel'), AddDoc)
+async def cancel_add_doc(m: Message, state: FSMContext):
+    await state.clear()
+    await m.answer("Добавление документа отменено.", parse_mode="HTML")
+
 @router.message(F.text == "➕ Добавить документ")
 async def add_doc(m: Message, state: FSMContext):
     if not is_admin(m.from_user.id):
         return await m.answer("Эта функция доступна только администратору.", parse_mode="HTML")
     await state.set_state(AddDoc.waiting_title)
-    await m.answer("Введите название документа (как показывать пользователям).", parse_mode="HTML")
+    await m.answer(
+        "Введите название документа (как показывать пользователям). Командой /cancel можно прервать процесс.",
+        parse_mode="HTML",
+    )
 
 @router.message(AddDoc.waiting_title, F.text)
 async def got_title(m: Message, state: FSMContext):
     await state.update_data(title=m.text.strip())
     await state.set_state(AddDoc.waiting_file)
-    await m.answer("Пришлите PDF-файл документом (не фото).", parse_mode="HTML")
+    await m.answer(
+        "Пришлите PDF-файл документом (не фото). Командой /cancel можно прервать процесс.",
+        parse_mode="HTML",
+    )
 
 @router.message(AddDoc.waiting_file, F.document)
 async def got_file(m: Message, state: FSMContext):
@@ -206,15 +219,34 @@ async def cmd_start(m: Message):
         await m.answer(
             "Здравствуйте! Отправьте вопрос — я пришлю найденные фрагменты текстом и приложу исходные файлы.\n"
             "Команды:\n"
+            "• /help — показать список команд\n"
             "• /clear_index — очистить локальный индекс Qdrant\n"
             "• /ingest_teach — проиндексировать все файлы из папки teach/ (source_group=teach)",
             reply_markup=admin_kb(), parse_mode="HTML"
         )
     else:
         await m.answer(
-            "Здравствуйте! Отправьте свой вопрос — я пришлю найденные фрагменты из локальной базы и приложу файлы.",
+            "Здравствуйте! Отправьте свой вопрос — я пришлю найденные фрагменты из локальной базы и приложу файлы.\n"
+            "Напишите /help для списка команд.",
             parse_mode="HTML"
         )
+
+@router.message(Command('help'))
+async def cmd_help(m: Message):
+    is_adm = is_admin(m.from_user.id)
+    text = (
+        "Доступные команды:\n"
+        "• /start — приветственное сообщение\n"
+        "• /help — показать эту справку"
+    )
+    if is_adm:
+        text += (
+            "\n• /clear_index — очистить локальный индекс Qdrant"
+            "\n• /ingest_teach — проиндексировать все файлы из папки teach/ (source_group=teach)"
+        )
+        await m.answer(text, reply_markup=admin_kb(), parse_mode="HTML")
+    else:
+        await m.answer(text, parse_mode="HTML")
 
 @router.message(Command("clear_index"))
 async def cmd_clear_index(m: Message):
@@ -247,14 +279,21 @@ async def cmd_ingest_teach(m: Message):
 async def handle_question(m: Message):
     q = m.text.strip()
 
+    # Сброс предыдущих локальных выдач для пользователя
+    pending_local.pop(m.from_user.id, None)
+
     # 0) БД: логируем пользователя и вопрос
     from db_local import DB_PATH  # только ради удобной отладки
     tg = m.from_user
     user_id = await asyncio.to_thread(upsert_user, tg.id, tg.username, tg.first_name, tg.last_name)
     question_id = await asyncio.to_thread(insert_question, user_id, q)
 
+    # сообщение о ходе поиска
+    msg = await m.answer("Ищу…", parse_mode="HTML")
+
     # Этап 1 — локальная база
     await m.answer("Ищу по локальной базе…", parse_mode="HTML")
+    await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
     hits, diag = await retrieve_local_hits(q, top_k=5, prefer_spravochnik=False)
 
     # Логируем все оценки (принятые и отфильтрованные)
@@ -264,20 +303,18 @@ async def handle_question(m: Message):
         await asyncio.to_thread(log_answer_score, question_id, payload, score, False)
 
     if hits:
+        await msg.edit_text("Нашёл ответы в локальной базе", parse_mode="HTML")
         await asyncio.to_thread(mark_answered, question_id, "local")
         pending_local[m.from_user.id] = hits
         for idx, pl in enumerate(hits):
             topic = html.escape(pl.get("source") or "Источник")
             snippet = preview_from_payload(pl)
-            buttons = [
-                [
-                    InlineKeyboardButton(text="✅", callback_data=f"accept_local:{idx}"),
-                    InlineKeyboardButton(text="❌", callback_data=f"reject_local:{idx}")
-                ]
-            ]
-            if len(hits) > 1:
-                buttons.append([InlineKeyboardButton(text='Показать все', callback_data='accept_local_all')])
-            kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+            kb = InlineKeyboardMarkup(
+                inline_keyboard=[[
+                    InlineKeyboardButton(text="Показать полностью", callback_data=f"show_local:{idx}"),
+                    InlineKeyboardButton(text="Скрыть", callback_data=f"hide_local:{idx}")
+                ]]
+            )
             await m.answer(f"<b>{topic}</b>\n{snippet}", parse_mode="HTML", reply_markup=kb)
         return
 
@@ -288,11 +325,15 @@ async def handle_question(m: Message):
     await asyncio.to_thread(log_unanswered, question_id, reason)
 
     # Этап 2 — сайт smp.edu.ru
-    await m.answer("Ищу на сайте smp.edu.ru…", parse_mode="HTML")
+    await msg.edit_text("Ищу на сайте smp.edu.ru…", parse_mode="HTML")
     try:
         site_text, site_results = await retrieve_site_live(q, max_results=5)
     except Exception as e:
         site_text, site_results = (f"Ошибка поиска на сайте: {e}", [])
+    if site_results:
+        await msg.edit_text("Нашёл ответы на сайте smp.edu.ru", parse_mode="HTML")
+    else:
+        await msg.edit_text("На сайте smp.edu.ru ничего не найдено", parse_mode="HTML")
     for chunk in _split_long(site_text):
         await m.answer(chunk, parse_mode="HTML")
 
@@ -302,10 +343,15 @@ async def handle_question(m: Message):
 
     # Этап 3 — интернет (только если 1 и 2 пусто)
     await m.answer("Ищу в интернете…", parse_mode="HTML")
+    await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
     try:
         web_text, web_results = await retrieve_web_live(q, max_results=5)
     except Exception as e:
         web_text, web_results = (f"Ошибка веб-поиска: {e}", [])
+    if web_results:
+        await msg.edit_text("Нашёл ответы в интернете", parse_mode="HTML")
+    else:
+        await msg.edit_text("В интернете ничего не найдено", parse_mode="HTML")
     for chunk in _split_long(web_text):
         await m.answer(chunk, parse_mode="HTML")
 
@@ -313,7 +359,7 @@ async def handle_question(m: Message):
         await asyncio.to_thread(mark_answered, question_id, "web")
 
 
-@router.callback_query(F.data.startswith("accept_local:"))
+@router.callback_query(F.data.startswith("show_local:"))
 async def accept_local(cb: CallbackQuery):
     try:
         idx = int(cb.data.split(":", 1)[1])
@@ -336,39 +382,22 @@ async def accept_local(cb: CallbackQuery):
     if files:
         await send_files(cb.message, files, limit=3)
     await cb.answer()
-
-
-@router.callback_query(F.data == "accept_local_all")
-async def accept_local_all(cb: CallbackQuery):
-    hits = pending_local.get(cb.from_user.id) or []
-    if not hits:
-        await cb.answer("Ответы не найдены")
-        return
-    await cb.message.edit_reply_markup()
-    texts: list[str] = []
-    files_set: set[str] = set()
-    for i, pl in enumerate(hits):
-        msg_text, cites, files = await format_answer_from_payload(pl)
-        if i > 0 and msg_text.startswith("Информация найдена в локальной базе."):
-            msg_text = msg_text.split("\n", 1)[1].lstrip()
-        texts.append(msg_text)
-        for f in files:
-            files_set.add(f)
-    combined = "\n\n".join(texts).strip()
-    for chunk in _split_long(combined):
-        await cb.message.answer(chunk, parse_mode="HTML")
-    await cb.message.answer(
-        "Дополнительную информацию вы можете прочитать в файлах, прикрепленных ниже.",
-        parse_mode="HTML",
-    )
-    if files_set:
-        await send_files(cb.message, list(files_set), limit=3)
     pending_local.pop(cb.from_user.id, None)
-    await cb.answer()
 
 
-@router.callback_query(F.data.startswith("reject_local:"))
+@router.callback_query(F.data.startswith("hide_local:"))
 async def reject_local(cb: CallbackQuery):
+    try:
+        idx = int(cb.data.split(":", 1)[1])
+    except Exception:
+        await cb.message.delete()
+        await cb.answer()
+        return
+    hits = pending_local.get(cb.from_user.id)
+    if hits and 0 <= idx < len(hits):
+        hits[idx] = None
+        if all(h is None for h in hits):
+            pending_local.pop(cb.from_user.id, None)
     await cb.message.delete()
     await cb.answer()
 
