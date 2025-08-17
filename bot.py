@@ -206,15 +206,34 @@ async def cmd_start(m: Message):
         await m.answer(
             "Здравствуйте! Отправьте вопрос — я пришлю найденные фрагменты текстом и приложу исходные файлы.\n"
             "Команды:\n"
+            "• /help — показать список команд\n"
             "• /clear_index — очистить локальный индекс Qdrant\n"
             "• /ingest_teach — проиндексировать все файлы из папки teach/ (source_group=teach)",
             reply_markup=admin_kb(), parse_mode="HTML"
         )
     else:
         await m.answer(
-            "Здравствуйте! Отправьте свой вопрос — я пришлю найденные фрагменты из локальной базы и приложу файлы.",
+            "Здравствуйте! Отправьте свой вопрос — я пришлю найденные фрагменты из локальной базы и приложу файлы.\n"
+            "Напишите /help для списка команд.",
             parse_mode="HTML"
         )
+
+@router.message(Command('help'))
+async def cmd_help(m: Message):
+    is_adm = is_admin(m.from_user.id)
+    text = (
+        "Доступные команды:\n"
+        "• /start — приветственное сообщение\n"
+        "• /help — показать эту справку"
+    )
+    if is_adm:
+        text += (
+            "\n• /clear_index — очистить локальный индекс Qdrant"
+            "\n• /ingest_teach — проиндексировать все файлы из папки teach/ (source_group=teach)"
+        )
+        await m.answer(text, reply_markup=admin_kb(), parse_mode="HTML")
+    else:
+        await m.answer(text, parse_mode="HTML")
 
 @router.message(Command("clear_index"))
 async def cmd_clear_index(m: Message):
