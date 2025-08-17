@@ -52,6 +52,7 @@ from db_local import (
     log_unanswered,
     log_answer_score,
     log_feedback,
+    get_feedback_stats,
 )
 from gigachat_client import self_check_sufficiency
 from watcher import start_watcher
@@ -132,6 +133,10 @@ def _split_long(text: str, limit: int = 4000) -> list[str]:
     if cur:
         out.append("".join(cur).rstrip())
     return out
+
+
+# Максимальная длина резюме, отправляемого пользователю
+SUMMARY_RESP_LIMIT = 1000
 
 
 # -------------------- отправка источников (+ DOCX→PDF) --------------------
@@ -331,6 +336,7 @@ async def cmd_help(m: Message):
         text += (
             "\n• /clear_index — очистить локальный индекс Qdrant"
             "\n• /ingest_teach — проиндексировать все файлы из папки teach/ (source_group=teach)"
+            "\n• /query_history — последние вопросы пользователей"
         )
         await m.answer(text, reply_markup=admin_kb(), parse_mode="HTML")
     else:
@@ -388,6 +394,38 @@ async def cmd_ingest_teach(m: Message):
         await m.answer(f"Ошибка при индексации teach/: {e}", parse_mode="HTML")
 
 
+@router.message(Command("query_history"))
+async def cmd_query_history(m: Message):
+    if not is_admin(m.from_user.id):
+        return await m.answer(
+            "Эта команда доступна только администратору.", parse_mode="HTML"
+        )
+    parts = m.text.split()
+    limit = 20
+    if len(parts) > 1 and parts[1].isdigit():
+        limit = int(parts[1])
+    rows = await asyncio.to_thread(fetch_questions, limit)
+    if not rows:
+        return await m.answer("История пуста.", parse_mode="HTML")
+    lines = []
+    for r in rows:
+        parts_info = [str(r["tg_id"])]
+        if r.get("username"):
+            parts_info.append("@" + html.escape(r["username"]))
+        if r.get("phone"):
+            parts_info.append(html.escape(r["phone"]))
+        name = " ".join(filter(None, [r.get("first_name"), r.get("last_name")]))
+        if name:
+            parts_info.append(html.escape(name))
+        header = " | ".join(parts_info)
+        lines.append(
+            f"<b>{html.escape(r['created_at'])}</b>\n{header}\n{html.escape(r['question'])}"
+        )
+    text = "\n\n".join(lines)
+    for chunk in _split_long(text):
+        await m.answer(chunk, parse_mode="HTML")
+
+
 # -------------------- обработка вопроса пользователя --------------------
 @router.message(
     F.text
@@ -416,7 +454,7 @@ async def handle_question(m: Message, state: FSMContext):
     # 0) БД: логируем пользователя и вопрос
     tg = m.from_user
     user_id = await asyncio.to_thread(
-        upsert_user, tg.id, tg.username, tg.first_name, tg.last_name
+        upsert_user, tg.id, tg.username, tg.first_name, tg.last_name, None
     )
     question_id = await asyncio.to_thread(insert_question, user_id, q)
 
@@ -445,6 +483,7 @@ async def handle_question(m: Message, state: FSMContext):
                 continue
             topic = html.escape(pl.get("source") or "Источник")
             snippet = preview_from_payload(pl, q)
+            snippet = f"<b>{snippet}</b>"
             kb = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
@@ -581,9 +620,13 @@ async def feedback_handler(cb: CallbackQuery):
     try:
         _, score, qid = cb.data.split(":")
         await asyncio.to_thread(log_feedback, int(qid), int(score), None)
+        try:
+            await cb.message.edit_reply_markup()
+        except Exception:
+            await cb.message.delete()
         await cb.answer("Спасибо")
     except Exception:
-        await cb.answer()
+        await cb.answer("Не удалось сохранить отзыв", show_alert=True)
 
 
 # -------------------- запуск --------------------
