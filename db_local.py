@@ -203,6 +203,25 @@ def log_feedback(question_id: int, score: int, comment: str | None = None) -> No
         con.close()
 
 
+def get_feedback_by_source() -> Dict[str, Tuple[float, int]]:
+    """Возвращает средний рейтинг по каждому источнику."""
+    con = _conn()
+    try:
+        cur = con.execute(
+            """
+            SELECT a.source, AVG(f.score) AS avg_score, COUNT(*) as cnt
+            FROM feedback f
+            JOIN answer_scores a ON f.question_id = a.question_id
+            WHERE a.source IS NOT NULL
+            GROUP BY a.source
+            """
+        )
+        rows = cur.fetchall()
+        return {row[0]: (row[1], row[2]) for row in rows if row[0]}
+    finally:
+        con.close()
+
+
 def upsert_file_index(path: str, size: int, mtime: float, sha256: str) -> None:
     con = _conn()
     try:
