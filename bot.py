@@ -28,6 +28,7 @@ from aiogram.types import (
     InlineKeyboardButton,
     CallbackQuery,
 )
+from aiogram.enums import ChatAction
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 
@@ -141,6 +142,7 @@ async def send_files(m: Message, paths: List[str], limit: int = 3):
                 else:
                     await m.answer("Не удалось преобразовать DOCX в PDF, отправляю исходный файл.", parse_mode="HTML")
 
+            await bot.send_chat_action(m.chat.id, ChatAction.UPLOAD_DOCUMENT)
             await m.answer_document(FSInputFile(to_send_path), caption=caption)
             count += 1
         except Exception:
@@ -255,6 +257,7 @@ async def handle_question(m: Message):
 
     # Этап 1 — локальная база
     await m.answer("Ищу по локальной базе…", parse_mode="HTML")
+    await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
     hits, diag = await retrieve_local_hits(q, top_k=5, prefer_spravochnik=False)
 
     # Логируем все оценки (принятые и отфильтрованные)
@@ -297,6 +300,7 @@ async def handle_question(m: Message):
 
     # Этап 3 — интернет (только если 1 и 2 пусто)
     await m.answer("Ищу в интернете…", parse_mode="HTML")
+    await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
     try:
         web_text, web_results = await retrieve_web_live(q, max_results=5)
     except Exception as e:
