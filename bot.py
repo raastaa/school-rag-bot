@@ -525,7 +525,7 @@ async def _handle_question(m: Message, state: FSMContext):
     await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
     try:
         logger.info("Starting local search for question: %s", q)
-        hits, diag = await retrieve_local_hits(q, top_k=5, prefer_spravochnik=False)
+        hits, _, diag = await retrieve_local_hits(q, top_k=5, prefer_spravochnik=False)
         logger.info("Local search finished, %d hits", len(hits))
     except RateLimitError:
         raise
@@ -656,6 +656,7 @@ async def _handle_question(m: Message, state: FSMContext):
             "Не удалось найти ответ; уточните вопрос или загрузите документы",
             parse_mode="HTML",
         )
+
 
 @router.message(
     F.text
