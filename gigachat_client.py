@@ -158,7 +158,7 @@ async def self_check_sufficiency(
     return "insufficient" if "insufficient" in r else "sufficient"
 
 
-async def generate_query_hyde(query: str, n: int = 2) -> list[str]:
+async def generate_query_hyde(query: str, n: int = 3) -> list[str]:
     out: list[str] = []
     for _ in range(n):
         prompt = (
@@ -171,11 +171,31 @@ async def generate_query_hyde(query: str, n: int = 2) -> list[str]:
     return out
 
 
+# Prompt templates for different answer modes
+PROMPT_TEMPLATES = {
+    "brief_plus": (
+        "Дай сжатый, но содержательный ответ в 5–9 пунктов. Каждый пункт = факт/правило/число. "
+        "Затем приведи 2–3 короткие цитаты (1–2 строки) с указанием источника/страницы. "
+        "Заверши списком 4–6 источников (название/страница/секция) — без пересказа."
+    ),
+    "detailed": (
+        "Секции: Краткий вывод; Доказательная база (цитаты с источниками); Объяснение; "
+        "Алгоритм действий; Ограничения/частные случаи; Источники. "
+        "Строго: сначала цитаты, затем обобщения. Не приводи вымысел. Если чего-то нет в источниках — не додумывай."
+    ),
+    "sources_only": (
+        "Перечисли 6–12 источников, укажи страницу/секцию и по 1 строке аннотации. Без пересказов ответа."
+    ),
+    "action_steps": ("Сформируй 7–12 конкретных шагов. Императив, без общих слов."),
+}
+
+
 __all__ = [
     "GigaChatEmbedder",
     "detect_dim",
     "chat",
     "self_check_sufficiency",
     "generate_query_hyde",
+    "PROMPT_TEMPLATES",
     "RateLimitError",
 ]

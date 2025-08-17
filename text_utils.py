@@ -3,12 +3,12 @@ import re
 import tiktoken
 import os
 
-EMB_MAX = int(os.getenv("EMBEDDING_MAX_TOKENS", "514"))
-EMB_TARGET = int(os.getenv("EMBEDDING_TARGET_TOKENS", "480"))
-EMB_OVERLAP = int(os.getenv("EMBEDDING_OVERLAP_TOKENS", "60"))
+EMB_MAX = int(os.getenv("EMBEDDING_MAX_TOKENS", "900"))
+EMB_TARGET = int(os.getenv("EMBEDDING_TARGET_TOKENS", "850"))
+EMB_OVERLAP = int(os.getenv("EMBEDDING_OVERLAP_TOKENS", "200"))
 
 _enc = tiktoken.get_encoding("cl100k_base")
-_HYPHENS = r"[\-\u2010\u2011\u2012\u2013\u2014\u2212]" 
+_HYPHENS = r"[\-\u2010\u2011\u2012\u2013\u2014\u2212]"
 
 
 def normalize_pdf_text(raw: str) -> str:
@@ -18,7 +18,7 @@ def normalize_pdf_text(raw: str) -> str:
     t = raw
 
     # 0) вычистить спец-символ мягкого переноса и BOM
-    t = t.replace("\u00AD", "")   # soft hyphen
+    t = t.replace("\u00ad", "")  # soft hyphen
     t = t.replace("\ufeff", "")
 
     # 1) склейка слов, разорванных переносом строки + дефисом:
@@ -35,8 +35,8 @@ def normalize_pdf_text(raw: str) -> str:
 
     # 4) схлопнуть лишние пробелы, но сохраним перенос абзацев как одиночный \n
     #    сначала нормализуем многострочные пробелы:
-    t = re.sub(r"[ \t]+\n", "\n", t)     # пробелы перед \n
-    t = re.sub(r"\n[ \t]+", "\n", t)     # пробелы после \n
+    t = re.sub(r"[ \t]+\n", "\n", t)  # пробелы перед \n
+    t = re.sub(r"\n[ \t]+", "\n", t)  # пробелы после \n
     #    двойные/тройные \n → один \n
     t = re.sub(r"\n{2,}", "\n", t)
     #    внутри строк — схлопываем в один пробел
@@ -45,16 +45,20 @@ def normalize_pdf_text(raw: str) -> str:
     # 5) финально — обрезка краёв
     return t.strip()
 
+
 def count_tokens(text: str) -> int:
     return len(_enc.encode(text))
 
+
 def _split_sentences(text: str) -> List[str]:
     # простая сегментация по предложениям; переносы строк уже нормализованы
-    parts = re.split(r'(?<=[\.\!\?])\s+', text.strip())
+    parts = re.split(r"(?<=[\.\!\?])\s+", text.strip())
     return [p for p in parts if p]
+
 
 def _truncate_tokens(tokens: List[int], max_tokens: int) -> List[int]:
     return tokens[:max_tokens] if len(tokens) > max_tokens else tokens
+
 
 def split_text_hard(text: str, max_tokens: int) -> List[str]:
     toks = _enc.encode(re.sub(r"\s+", " ", text).strip())
@@ -65,9 +69,12 @@ def split_text_hard(text: str, max_tokens: int) -> List[str]:
         i = j
     return out
 
-def split_into_chunks(pages: List[Tuple[int, str]],
-                      max_tokens: int = EMB_TARGET,
-                      overlap: int = EMB_OVERLAP) -> List[Tuple[str, int, int]]:
+
+def split_into_chunks(
+    pages: List[Tuple[int, str]],
+    max_tokens: int = EMB_TARGET,
+    overlap: int = EMB_OVERLAP,
+) -> List[Tuple[str, int, int]]:
     """
     Возвращает чанки (text, page_from, page_to) и ГАРАНТИРУЕТ:
     - каждый чанк ≤ EMB_MAX токенов;
@@ -82,7 +89,7 @@ def split_into_chunks(pages: List[Tuple[int, str]],
         if not buf_tokens:
             return
         p_from = min(buf_pages) if buf_pages else None
-        p_to   = max(buf_pages) if buf_pages else None
+        p_to = max(buf_pages) if buf_pages else None
 
         if len(buf_tokens) > EMB_MAX:
             # жёстко режем и помечаем тот же диапазон страниц для всех частей
@@ -99,7 +106,7 @@ def split_into_chunks(pages: List[Tuple[int, str]],
             keep = buf_tokens[-overlap:]
             last_page = p_to
             buf_tokens = keep
-            buf_pages  = [last_page] if last_page is not None else []
+            buf_pages = [last_page] if last_page is not None else []
         else:
             buf_tokens, buf_pages = [], []
 
@@ -153,4 +160,13 @@ def split_into_chunks(pages: List[Tuple[int, str]],
                 safe.append((piece, pf, pt))
         else:
             safe.append((text, pf, pt))
-    return safe
+    merged: List[Tuple[str, int, int]] = []
+    for text, pf, pt in safe:
+        toks = count_tokens(text)
+        if merged and toks < int(0.3 * EMB_TARGET):
+            prev_text, prev_pf, prev_pt = merged.pop()
+            new_text = prev_text + "\n" + text
+            merged.append((new_text, prev_pf or pf, pt or prev_pt))
+        else:
+            merged.append((text, pf, pt))
+    return merged

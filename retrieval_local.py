@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import List, Dict, Tuple
 import os
 import html
+import json
 import re
 import time
 import numpy as np
@@ -14,13 +15,25 @@ from store_qdrant import search as qsearch, get_client
 from qdrant_client.models import Filter, FieldCondition, MatchValue
 from db_local import get_feedback_by_source
 from models import DocChunk
+from config import (
+    TOP_K_INITIAL,
+    TOP_K_MAX,
+    MIN_UNIQUE_SOURCES,
+    MMR_LAMBDA,
+    RERANK_ALPHA,
+    HYDE_N,
+    NEIGHBOR_RADIUS,
+    PERCENTILE_CUT,
+    MIN_RESULTS_FLOOR,
+    LOCAL_SEARCH_CACHE_TTL_SEC,
+)
 
 # Параметры
-MAX_ITEMS = 3
-SNIPPET_LIMIT = 800
-NEIGH_BEFORE = 0  # только центр
-NEIGH_AFTER = 1  # и ОДИН чанк после
-THRESHOLD = float(os.getenv("RELEVANCE_THRESHOLD", "0.82"))  # порог релевантности (>=)
+MAX_ITEMS = TOP_K_INITIAL
+SNIPPET_LIMIT = 2000
+NEIGH_BEFORE = NEIGHBOR_RADIUS
+NEIGH_AFTER = NEIGHBOR_RADIUS
+THRESHOLD = float(os.getenv("RELEVANCE_THRESHOLD", "0.82"))  # базовый порог
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "school_docs")
 RERANK_ENABLED = os.getenv("RERANK_ENABLED", "true").lower() not in {"0", "false"}
 # Максимальная длина текста резюме
@@ -60,7 +73,7 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def select_chunks_mmr(
-    qv: np.ndarray, docs: List[DocChunk], k: int = 5, lam: float = 0.7
+    qv: np.ndarray, docs: List[DocChunk], k: int = 5, lam: float = MMR_LAMBDA
 ) -> List[DocChunk]:
     selected: List[DocChunk] = []
     rest = docs[:]
@@ -86,7 +99,7 @@ def select_chunks_mmr(
 
 
 def rerank_combined(
-    query: str, docs: List[DocChunk], alpha: float = 0.7
+    query: str, docs: List[DocChunk], alpha: float = RERANK_ALPHA
 ) -> List[DocChunk]:
     if not docs:
         return []
@@ -105,7 +118,22 @@ def rerank_combined(
     return [d for d, _ in ranked]
 
 
-async def fused_search(queries: List[str], top_k: int = 5) -> List[DocChunk]:
+_SEARCH_CACHE: Dict[str, Tuple[float, List[DocChunk]]] = {}
+
+
+def _cache_key(queries: List[str], top_k: int) -> str:
+    return json.dumps({"q": queries, "k": top_k}, sort_keys=True)
+
+
+async def fused_search(
+    queries: List[str], top_k: int = TOP_K_INITIAL
+) -> List[DocChunk]:
+    key = _cache_key(queries, top_k)
+    now = time.time()
+    cached = _SEARCH_CACHE.get(key)
+    if cached and now - cached[0] < LOCAL_SEARCH_CACHE_TTL_SEC:
+        logger.info("fused_search cache hit for %s", key)
+        return cached[1]
     logger.info("Starting fused search for %d queries, top_k=%d", len(queries), top_k)
     emb = GigaChatEmbedder()
     logger.info("Embedding queries")
@@ -140,6 +168,7 @@ async def fused_search(queries: List[str], top_k: int = 5) -> List[DocChunk]:
         logger.info("Reranking %d documents", len(out))
         out = rerank_combined(queries[0], out)
     logger.info("Fused search returning %d documents", len(out))
+    _SEARCH_CACHE[key] = (now, out)
     return out
 
 
@@ -502,15 +531,25 @@ async def retrieve_local_hits(
         prefer_spravochnik,
     )
     logger.info("Generating HYDE queries")
-    hyde_q = await generate_query_hyde(question, n=2)
+    hyde_q = await generate_query_hyde(question, n=HYDE_N)
     logger.info("HYDE queries: %s", hyde_q)
     logger.info("Running fused search")
-    docs = await fused_search([question] + hyde_q, top_k=top_k)
+    docs = await fused_search([question] + hyde_q, top_k=TOP_K_MAX)
     emb = GigaChatEmbedder()
     logger.info("Embedding original question for MMR")
     qvec = np.array((await emb.embed([question]))[0])
     logger.info("Selecting top %d chunks with MMR", top_k)
-    docs_sel = select_chunks_mmr(qvec, docs, k=top_k)
+    docs_sel = select_chunks_mmr(qvec, docs, k=top_k, lam=MMR_LAMBDA)
+
+    # ensure minimal unique sources
+    seen_ids = {d.doc_id for d in docs_sel if d.doc_id}
+    if len(seen_ids) < MIN_UNIQUE_SOURCES:
+        for d in docs:
+            if d.doc_id not in seen_ids:
+                docs_sel.append(d)
+                seen_ids.add(d.doc_id)
+            if len(seen_ids) >= MIN_UNIQUE_SOURCES or len(docs_sel) >= TOP_K_MAX:
+                break
 
     # remove near-duplicates
     unique: List[DocChunk] = []
@@ -521,12 +560,16 @@ async def retrieve_local_hits(
         unique.append(d)
     docs_sel = unique
 
-    # dynamic percentile threshold
+    # dynamic percentile threshold with floor
     if docs_sel:
         scores = np.array([d.score for d in docs_sel])
-        perc = float(np.percentile(scores, 80))
+        perc = float(np.percentile(scores, PERCENTILE_CUT * 100))
         dyn_thr = max(THRESHOLD, perc)
         docs_sel = [d for d in docs_sel if d.score >= dyn_thr]
+        if len(docs_sel) < MIN_RESULTS_FLOOR:
+            docs_sel = sorted(unique, key=lambda d: d.score, reverse=True)[
+                :MIN_RESULTS_FLOOR
+            ]
     else:
         dyn_thr = THRESHOLD
 
@@ -534,17 +577,25 @@ async def retrieve_local_hits(
     for d in docs_sel:
         sc = d.score
         pl: Dict = d.payload or {}
-        if sc is None or sc >= dyn_thr:
-            passed_payloads.append(pl)
-            passed_diag.append((pl, sc))
-        else:
-            rejected_diag.append((pl, sc))
+        passed_payloads.append(pl)
+        passed_diag.append((pl, sc))
+    for d in unique:
+        if d not in docs_sel:
+            rejected_diag.append((d.payload or {}, d.score))
 
     logger.info(
         "Documents passed threshold %.2f: %d/%d",
         dyn_thr,
         len(passed_payloads),
         len(unique),
+    )
+    logger.info(
+        "diag params: top_k_used=%d unique_sources=%d mmr_lambda=%.2f percentile_cut=%.2f neighbor_radius=%d",
+        len(passed_payloads),
+        len({pl.get("doc_id") for pl in passed_payloads if pl.get("doc_id")}),
+        MMR_LAMBDA,
+        PERCENTILE_CUT,
+        NEIGHBOR_RADIUS,
     )
     logger.info("Summarizing documents")
     summary = await summarize([pl.get("text", "") for pl in passed_payloads])

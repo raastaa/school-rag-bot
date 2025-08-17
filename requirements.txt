@@ -12,9 +12,9 @@ reportlab
 sqlalchemy
 tiktoken
 trafilatura
-rank-bm25
-python-pptx
-openpyxl
+rank-bm25==0.2.2
+python-pptx==0.6.21
+openpyxl==3.1.2
 pytest
 black
 ruff
