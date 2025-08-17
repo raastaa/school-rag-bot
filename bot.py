@@ -130,6 +130,10 @@ def _split_long(text: str, limit: int = 4000) -> list[str]:
     return out
 
 
+# Максимальная длина резюме, отправляемого пользователю
+SUMMARY_RESP_LIMIT = 1000
+
+
 # -------------------- отправка источников (+ DOCX→PDF) --------------------
 CONVERT_DIR = os.path.join("outputs", "converted")
 os.makedirs(CONVERT_DIR, exist_ok=True)
@@ -410,7 +414,7 @@ async def handle_question(m: Message):
     # Этап 1 — локальная база
     await m.answer("Ищу по локальной базе…", parse_mode="HTML")
     await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
-    hits, diag = await retrieve_local_hits(q, top_k=5, prefer_spravochnik=False)
+    hits, summary, diag = await retrieve_local_hits(q, top_k=5, prefer_spravochnik=False)
 
     # Логируем все оценки (принятые и отфильтрованные)
     for payload, score in diag.get("passed") or []:
@@ -420,10 +424,13 @@ async def handle_question(m: Message):
 
     if hits:
         await msg.edit_text("Нашёл ответы в локальной базе", parse_mode="HTML")
+        if summary:
+            await m.answer(html.escape(summary[:SUMMARY_RESP_LIMIT]), parse_mode="HTML")
         pending_local[m.from_user.id] = (question_id, hits)
         for idx, pl in enumerate(hits):
             topic = html.escape(pl.get("source") or "Источник")
             snippet = preview_from_payload(pl, q)
+            snippet = f"<b>{snippet}</b>"
             kb = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [

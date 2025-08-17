@@ -20,6 +20,8 @@ NEIGH_AFTER = 1  # и ОДИН чанк после
 THRESHOLD = float(os.getenv("RELEVANCE_THRESHOLD", "0.82"))  # порог релевантности (>=)
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "school_docs")
 RERANK_ENABLED = os.getenv("RERANK_ENABLED", "true").lower() not in {"0", "false"}
+# Максимальная длина текста резюме
+SUMMARY_LIMIT = 1000
 
 
 @dataclass
@@ -243,6 +245,27 @@ async def _summarize_text(text: str) -> str:
     return await chat(prompt)
 
 
+async def summarize(texts: List[str]) -> str:
+    """Возвращает краткое резюме списка текстов с помощью LLM."""
+    if not texts:
+        return ""
+    joined = "\n\n".join(t for t in texts if t)
+    if not joined:
+        return ""
+    joined = joined[:12000]
+    prompt = (
+        "Сделай краткое резюме по следующим фрагментам. Не добавляй сведений вне "
+        "этих фрагментов.\n\n" + joined
+    )
+    summary = await chat(prompt)
+    if len(summary) <= SUMMARY_LIMIT:
+        return summary
+    cut = summary[:SUMMARY_LIMIT]
+    if " " in cut:
+        cut = cut.rsplit(" ", 1)[0]
+    return cut + "…"
+
+
 def _expand_chapter(all_payloads: List[Dict], center_id: str) -> str:
     """Расширяем текст до границ условной главы.
 
@@ -425,8 +448,8 @@ async def retrieve_local_hits(
     question: str,
     top_k: int = MAX_ITEMS,
     prefer_spravochnik: bool = True,
-) -> Tuple[List[Dict], Dict[str, list]]:
-    """Возвращает список payload'ов релевантных чанков без форматирования."""
+) -> Tuple[List[Dict], str, Dict[str, list]]:
+    """Возвращает список payload'ов релевантных чанков и их резюме."""
     hyde_q = await generate_query_hyde(question, n=2)
     docs = await fused_search([question] + hyde_q, top_k=top_k)
     emb = GigaChatEmbedder()
@@ -443,5 +466,6 @@ async def retrieve_local_hits(
         else:
             rejected_diag.append((pl, sc))
 
+    summary = await summarize([pl.get("text", "") for pl in passed_payloads])
     diag = {"passed": passed_diag, "rejected": rejected_diag}
-    return passed_payloads, diag
+    return passed_payloads, summary, diag
