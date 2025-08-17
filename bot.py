@@ -1,4 +1,5 @@
 # bot.py
+# ruff: noqa: E402
 import os
 import sys
 import asyncio
@@ -52,6 +53,7 @@ from db_local import (
     log_unanswered,
     log_answer_score,
     log_feedback,
+    get_feedback_stats,
 )
 from gigachat_client import self_check_sufficiency
 from watcher import start_watcher
@@ -71,6 +73,7 @@ ADMIN_IDS = {
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "school_docs")
 TEACH_DIR = os.getenv("TEACH_DIR", "./teach")
 UPLOADS_DIR = os.getenv("UPLOADS_DIR", "./uploads")
+HISTORY_LIMIT = int(os.getenv("HISTORY_LIMIT", "3"))
 
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
@@ -80,7 +83,7 @@ dp.include_router(router)
 dp.update.middleware(Throttle(0.7))
 
 # Храним для пользователей список найденных локальных ответов
-pending_local: dict[int, list] = {}
+pending_local: dict[int, tuple[int, list[dict | None]]] = {}
 
 
 # -------------------- вспомогалки UI/админ --------------------
@@ -117,7 +120,9 @@ def _split_long(text: str, limit: int = 4000) -> list[str]:
     """Режем длинное сообщение для Telegram (лимит ~4096)."""
     if not text:
         return [""]
-    out, cur, cur_len = [], [], 0
+    out: list[str] = []
+    cur: list[str] = []
+    cur_len = 0
     for para in text.split("\n\n"):
         add = para + "\n\n"
         if cur_len + len(add) > limit and cur:
@@ -129,6 +134,10 @@ def _split_long(text: str, limit: int = 4000) -> list[str]:
     if cur:
         out.append("".join(cur).rstrip())
     return out
+
+
+# Максимальная длина резюме, отправляемого пользователю
+SUMMARY_RESP_LIMIT = 1000
 
 
 # -------------------- отправка источников (+ DOCX→PDF) --------------------
@@ -328,6 +337,7 @@ async def cmd_help(m: Message):
         text += (
             "\n• /clear_index — очистить локальный индекс Qdrant"
             "\n• /ingest_teach — проиндексировать все файлы из папки teach/ (source_group=teach)"
+            "\n• /query_history — последние вопросы пользователей"
         )
         await m.answer(text, reply_markup=admin_kb(), parse_mode="HTML")
     else:
@@ -348,7 +358,6 @@ async def cmd_my_history(m: Message):
             await m.answer(chunk, parse_mode="HTML")
     else:
         await m.answer("У вас пока нет запросов.", parse_mode="HTML")
-
 
 @router.message(Command("clear_index"))
 async def cmd_clear_index(m: Message):
@@ -394,6 +403,38 @@ async def cmd_ingest_teach(m: Message):
         await m.answer(f"Ошибка при индексации teach/: {e}", parse_mode="HTML")
 
 
+@router.message(Command("query_history"))
+async def cmd_query_history(m: Message):
+    if not is_admin(m.from_user.id):
+        return await m.answer(
+            "Эта команда доступна только администратору.", parse_mode="HTML"
+        )
+    parts = m.text.split()
+    limit = 20
+    if len(parts) > 1 and parts[1].isdigit():
+        limit = int(parts[1])
+    rows = await asyncio.to_thread(fetch_questions, limit)
+    if not rows:
+        return await m.answer("История пуста.", parse_mode="HTML")
+    lines = []
+    for r in rows:
+        parts_info = [str(r["tg_id"])]
+        if r.get("username"):
+            parts_info.append("@" + html.escape(r["username"]))
+        if r.get("phone"):
+            parts_info.append(html.escape(r["phone"]))
+        name = " ".join(filter(None, [r.get("first_name"), r.get("last_name")]))
+        if name:
+            parts_info.append(html.escape(name))
+        header = " | ".join(parts_info)
+        lines.append(
+            f"<b>{html.escape(r['created_at'])}</b>\n{header}\n{html.escape(r['question'])}"
+        )
+    text = "\n\n".join(lines)
+    for chunk in _split_long(text):
+        await m.answer(chunk, parse_mode="HTML")
+
+
 # -------------------- обработка вопроса пользователя --------------------
 @router.message(
     F.text
@@ -407,18 +448,22 @@ async def cmd_ingest_teach(m: Message):
         }
     )
 )
-async def handle_question(m: Message):
+async def handle_question(m: Message, state: FSMContext):
     q = m.text.strip()
+
+    data = await state.get_data()
+    history: List[str] = data.get("history", [])
+    combined_q = "\n".join(history + [q]) if history else q
+    history.append(q)
+    await state.update_data(history=history[-HISTORY_LIMIT:])
 
     # Сброс предыдущих локальных выдач для пользователя
     pending_local.pop(m.from_user.id, None)
 
     # 0) БД: логируем пользователя и вопрос
-    from db_local import DB_PATH  # только ради удобной отладки
-
     tg = m.from_user
     user_id = await asyncio.to_thread(
-        upsert_user, tg.id, tg.username, tg.first_name, tg.last_name
+        upsert_user, tg.id, tg.username, tg.first_name, tg.last_name, None
     )
     question_id = await asyncio.to_thread(insert_question, user_id, q)
 
@@ -428,7 +473,9 @@ async def handle_question(m: Message):
     # Этап 1 — локальная база
     await m.answer("Ищу по локальной базе…", parse_mode="HTML")
     await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
-    hits, diag = await retrieve_local_hits(q, top_k=5, prefer_spravochnik=False)
+    hits, diag = await retrieve_local_hits(
+        combined_q, top_k=5, prefer_spravochnik=False
+    )
 
     # Логируем все оценки (принятые и отфильтрованные)
     for payload, score in diag.get("passed") or []:
@@ -438,10 +485,14 @@ async def handle_question(m: Message):
 
     if hits:
         await msg.edit_text("Нашёл ответы в локальной базе", parse_mode="HTML")
-        pending_local[m.from_user.id] = (question_id, hits)
-        for idx, pl in enumerate(hits):
+        hits_list: list[dict | None] = list(hits)
+        pending_local[m.from_user.id] = (question_id, hits_list)
+        for idx, pl in enumerate(hits_list):
+            if pl is None:
+                continue
             topic = html.escape(pl.get("source") or "Источник")
             snippet = preview_from_payload(pl, q)
+            snippet = f"<b>{snippet}</b>"
             kb = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
@@ -474,7 +525,7 @@ async def handle_question(m: Message):
     # Этап 2 — сайт smp.edu.ru
     await msg.edit_text("Ищу на сайте smp.edu.ru…", parse_mode="HTML")
     try:
-        site_text, site_results = await retrieve_site_live(q, max_results=5)
+        site_text, site_results = await retrieve_site_live(combined_q, max_results=5)
     except Exception as e:
         site_text, site_results = (f"Ошибка поиска на сайте: {e}", [])
     if site_results:
@@ -486,25 +537,39 @@ async def handle_question(m: Message):
 
     if site_results:
         await asyncio.to_thread(mark_answered, question_id, "site")
-        return  # есть выдача на этапе 2 → веб не запускаем
 
-    # Этап 3 — интернет (только если 1 и 2 пусто)
+    # Этап 3 — интернет (запускаем всегда, если нет локальных совпадений)
     await m.answer("Ищу в интернете…", parse_mode="HTML")
     await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
     try:
-        web_text, web_results = await retrieve_web_live(q, max_results=5)
+        web_text, web_results = await retrieve_web_live(combined_q, max_results=5)
     except Exception as e:
         web_text, web_results = (f"Ошибка веб-поиска: {e}", [])
     if web_results:
         await msg.edit_text("Нашёл ответы в интернете", parse_mode="HTML")
     else:
         await msg.edit_text("В интернете ничего не найдено", parse_mode="HTML")
-    for chunk in _split_long(web_text):
+
+    # Отдельный блок с веб-результатами
+    if web_results:
+        web_block = "По данным сети…\n" + web_text
+    else:
+        web_block = "По данным сети ничего не найдено"
+    for chunk in _split_long(web_block):
         await m.answer(chunk, parse_mode="HTML")
 
-    if web_results:
+    # логируем источники веб-поиска
+    for it in web_results:
+        payload = {
+            "source": it.get("link"),
+            "source_group": "web",
+            "path": it.get("link"),
+        }
+        await asyncio.to_thread(log_answer_score, question_id, payload, None, True)
+
+    if web_results and not site_results:
         await asyncio.to_thread(mark_answered, question_id, "web")
-    else:
+    elif not (site_results or web_results):
         await m.answer(
             "Не удалось найти ответ; уточните вопрос или загрузите документы",
             parse_mode="HTML",
@@ -527,6 +592,9 @@ async def accept_local(cb: CallbackQuery):
         await cb.answer("Ответ не найден")
         return
     pl = hits[idx]
+    if pl is None:
+        await cb.answer("Ответ не найден")
+        return
     msg_text, cites, files = await format_answer_from_payload(pl)
     await cb.message.edit_reply_markup()
     for chunk in _split_long(msg_text):
@@ -575,9 +643,13 @@ async def feedback_handler(cb: CallbackQuery):
     try:
         _, score, qid = cb.data.split(":")
         await asyncio.to_thread(log_feedback, int(qid), int(score), None)
+        try:
+            await cb.message.edit_reply_markup()
+        except Exception:
+            await cb.message.delete()
         await cb.answer("Спасибо")
     except Exception:
-        await cb.answer()
+        await cb.answer("Не удалось сохранить отзыв", show_alert=True)
 
 
 # -------------------- запуск --------------------
