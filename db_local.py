@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS users (
     username      TEXT,
     first_name    TEXT,
     last_name     TEXT,
+    phone         TEXT,
     created_at    TEXT NOT NULL,
     last_seen     TEXT NOT NULL,
     UNIQUE(tg_id)
@@ -99,6 +100,7 @@ def upsert_user(
     username: Optional[str],
     first_name: Optional[str],
     last_name: Optional[str],
+    phone: Optional[str] = None,
 ) -> int:
     now = datetime.datetime.utcnow().isoformat()
     con = _conn()
@@ -109,13 +111,16 @@ def upsert_user(
         if row:
             user_id = row[0]
             cur.execute(
-                "UPDATE users SET username=?, first_name=?, last_name=?, last_seen=? WHERE id=?",
-                (username, first_name, last_name, now, user_id),
+                "UPDATE users SET username=?, first_name=?, last_name=?, phone=?, last_seen=? WHERE id=?",
+                (username, first_name, last_name, phone, now, user_id),
             )
         else:
             cur.execute(
-                "INSERT INTO users (tg_id, username, first_name, last_name, created_at, last_seen) VALUES (?,?,?,?,?,?)",
-                (tg_id, username, first_name, last_name, now, now),
+                (
+                    "INSERT INTO users (tg_id, username, first_name, last_name, phone, created_at, last_seen) "
+                    "VALUES (?,?,?,?,?,?,?)"
+                ),
+                (tg_id, username, first_name, last_name, phone, now, now),
             )
             user_id = cur.lastrowid
         con.commit()
@@ -202,7 +207,6 @@ def log_feedback(question_id: int, score: int, comment: str | None = None) -> No
     finally:
         con.close()
 
-
 def get_feedback_by_source() -> Dict[str, Tuple[float, int]]:
     """Возвращает средний рейтинг по каждому источнику."""
     con = _conn()
@@ -275,5 +279,35 @@ def get_question_mode(question_id: int) -> str | None:
         )
         row = cur.fetchone()
         return row[0] if row else None
+    finally:
+        con.close()
+
+def fetch_questions(limit: int) -> list[dict[str, Any]]:
+    """Return recent questions with user info."""
+    con = _conn()
+    try:
+        cur = con.execute(
+            """
+            SELECT u.tg_id, u.username, u.first_name, u.last_name, u.phone, q.question, q.created_at
+            FROM questions q
+            JOIN users u ON q.user_id = u.id
+            ORDER BY q.created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = cur.fetchall()
+        return [
+            {
+                "tg_id": r[0],
+                "username": r[1],
+                "first_name": r[2],
+                "last_name": r[3],
+                "phone": r[4],
+                "question": r[5],
+                "created_at": r[6],
+            }
+            for r in rows
+        ]
     finally:
         con.close()
