@@ -2,7 +2,7 @@
 import os
 import sqlite3
 import datetime
-from typing import Optional
+from typing import Optional, Dict, Tuple
 
 DB_PATH = os.getenv("APP_DB_PATH", "./app.db")
 
@@ -160,6 +160,27 @@ def fetch_user_questions(user_id: int, limit: int) -> list[str]:
         con.close()
 
 
+def fetch_questions(limit: int) -> list[dict]:
+    """Возвращает последние вопросы с данными пользователя."""
+    con = _conn()
+    try:
+        cur = con.execute(
+            """
+            SELECT q.id, q.question, q.created_at, u.tg_id, u.username, u.phone,
+                   u.first_name, u.last_name
+            FROM questions q
+            JOIN users u ON q.user_id = u.id
+            ORDER BY q.created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        columns = [d[0] for d in cur.description]
+        return [dict(zip(columns, row)) for row in cur.fetchall()]
+    finally:
+        con.close()
+
+
 def mark_answered(question_id: int, stage: str):
     con = _conn()
     try:
@@ -221,6 +242,7 @@ def log_feedback(question_id: int, score: int, comment: str | None = None) -> No
         con.commit()
     finally:
         con.close()
+
 
 def get_feedback_by_source() -> Dict[str, Tuple[float, int]]:
     """Возвращает средний рейтинг по каждому источнику."""
@@ -296,6 +318,8 @@ def get_question_mode(question_id: int) -> str | None:
         return row[0] if row else None
     finally:
         con.close()
+
+
 def get_last_mode_for_user(user_id: int) -> str | None:
     """Возвращает последний выбранный пользователем режим источников."""
     con = _conn()
@@ -312,5 +336,6 @@ def get_last_mode_for_user(user_id: int) -> str | None:
             (user_id,),
         )
         row = cur.fetchone()
+        return row[0] if row else None
     finally:
         con.close()
