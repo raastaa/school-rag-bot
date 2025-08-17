@@ -5,6 +5,7 @@ import asyncio
 import shutil
 import subprocess
 import tempfile
+import html
 from typing import List
 
 from dotenv import load_dotenv
@@ -31,7 +32,11 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 
 # --- our modules ---
-from retrieval_local import retrieve_local, format_answer_from_payload
+from retrieval_local import (
+    retrieve_local_hits,
+    format_answer_from_payload,
+    preview_from_payload,
+)
 from ingest.pdf_ingest import ingest_pdf           # админ: одиночный PDF
 from ingest.ingest_generic import ingest_path      # индексация папки (teach/)
 from store_qdrant import get_client                # /clear_index
@@ -59,7 +64,7 @@ router = Router()
 dp.include_router(router)
 
 # Храним для пользователей список найденных локальных ответов
-pending_local: dict[int, dict] = {}
+pending_local: dict[int, list] = {}
 
 # -------------------- вспомогалки UI/админ --------------------
 def is_admin(user_id: int) -> bool:
@@ -250,7 +255,7 @@ async def handle_question(m: Message):
 
     # Этап 1 — локальная база
     await m.answer("Ищу по локальной базе…", parse_mode="HTML")
-    msg_text, cites, files, diag = await retrieve_local(q, top_k=3, prefer_spravochnik=False)
+    hits, diag = await retrieve_local_hits(q, top_k=5, prefer_spravochnik=False)
 
     # Логируем все оценки (принятые и отфильтрованные)
     for payload, score in (diag.get("passed") or []):
@@ -258,30 +263,17 @@ async def handle_question(m: Message):
     for payload, score in (diag.get("rejected") or []):
         await asyncio.to_thread(log_answer_score, question_id, payload, score, False)
 
-    found_local = bool(cites)
-    for chunk in _split_long(msg_text):
-        await m.answer(chunk, parse_mode="HTML")
-
-    if found_local:
+    if hits:
         await asyncio.to_thread(mark_answered, question_id, "local")
-        await m.answer(
-            "Дополнительную информацию вы можете прочитать в файлах, прикрепленных ниже.",
-            parse_mode="HTML"
-        )
-        if files:
-            await send_files(m, files, limit=3)
-
-        payloads = [pl for pl, _ in (diag.get("passed") or [])]
-        pending_local[m.from_user.id] = {"hits": payloads, "index": 0}
-        if len(payloads) > 1:
+        pending_local[m.from_user.id] = hits
+        for idx, pl in enumerate(hits):
+            topic = html.escape(pl.get("source") or "Источник")
+            snippet = preview_from_payload(pl)
             kb = InlineKeyboardMarkup(
-                inline_keyboard=[[InlineKeyboardButton(text="не подходит", callback_data="next_local")]]
+                inline_keyboard=[[InlineKeyboardButton(text="✅", callback_data=f"accept_local:{idx}"),
+                                  InlineKeyboardButton(text="❌", callback_data=f"reject_local:{idx}")]]
             )
-            await m.answer(
-                "если ответ вам не подходит попробуйте поискать еще для этого нажмите кнопку ниже",
-                reply_markup=kb,
-                parse_mode="HTML",
-            )
+            await m.answer(f"<b>{topic}</b>\n{snippet}", parse_mode="HTML", reply_markup=kb)
         return
 
     # локально пусто: определим причину для unanswered
@@ -316,17 +308,20 @@ async def handle_question(m: Message):
         await asyncio.to_thread(mark_answered, question_id, "web")
 
 
-@router.callback_query(F.data == "next_local")
-async def next_local(cb: CallbackQuery):
-    data = pending_local.get(cb.from_user.id)
-    hits = data.get("hits") if data else []
-    idx = (data.get("index") if data else 0) + 1
-    if idx >= len(hits):
-        await cb.answer("Больше ответов нет")
+@router.callback_query(F.data.startswith("accept_local:"))
+async def accept_local(cb: CallbackQuery):
+    try:
+        idx = int(cb.data.split(":", 1)[1])
+    except Exception:
+        await cb.answer()
         return
-    data["index"] = idx
+    hits = pending_local.get(cb.from_user.id) or []
+    if idx < 0 or idx >= len(hits):
+        await cb.answer("Ответ не найден")
+        return
     pl = hits[idx]
     msg_text, cites, files = await format_answer_from_payload(pl)
+    await cb.message.edit_reply_markup()
     for chunk in _split_long(msg_text):
         await cb.message.answer(chunk, parse_mode="HTML")
     await cb.message.answer(
@@ -335,17 +330,12 @@ async def next_local(cb: CallbackQuery):
     )
     if files:
         await send_files(cb.message, files, limit=3)
-    if idx + 1 < len(hits):
-        kb = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="не подходит", callback_data="next_local")]]
-        )
-        await cb.message.answer(
-            "если ответ вам не подходит попробуйте поискать еще для этого нажмите кнопку ниже",
-            reply_markup=kb,
-            parse_mode="HTML",
-        )
-    else:
-        await cb.message.answer("Это последний ответ.", parse_mode="HTML")
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("reject_local:"))
+async def reject_local(cb: CallbackQuery):
+    await cb.message.delete()
     await cb.answer()
 
 # -------------------- запуск --------------------

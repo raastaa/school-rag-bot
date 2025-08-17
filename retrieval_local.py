@@ -169,6 +169,17 @@ def extract_scored(hits: list) -> list[tuple[dict, float | None]]:
     return out
 
 
+def preview_from_payload(pl: Dict) -> str:
+    """Возвращает короткий фрагмент текста (до двух предложений) для превью."""
+    path = pl.get("path")
+    center_id = pl.get("id")
+    doc_payloads = _collect_doc_points(path) if path else []
+    txt = _neighbors_preview(doc_payloads, center_id)
+    sentences = re.split(r"(?<=[.!?])\s+", txt.strip())
+    preview = " ".join(sentences[:2]).strip()
+    return _escape(preview)
+
+
 async def format_answer_from_payload(pl: Dict) -> Tuple[str, List[Dict], List[str]]:
     """Формирует ответ по данному payload (без поиска)."""
     lines: List[str] = ["Информация найдена в локальной базе.\n"]
@@ -183,7 +194,11 @@ async def format_answer_from_payload(pl: Dict) -> Tuple[str, List[Dict], List[st
     if path:
         summary_text = ""
         if pl.get("source_group") == "spravochnik":
-            summary_text = _expand_chapter(doc_payloads, center_id) or _expand_paragraph(doc_payloads, center_id)
+            # Ранее для справочника брали целую главу, что приводило к
+            # одинаковым ответам. Теперь сначала пытаемся расширить
+            # текст до границ ближайшего абзаца, а при отсутствии
+            # результата — до условной главы.
+            summary_text = _expand_paragraph(doc_payloads, center_id) or _expand_chapter(doc_payloads, center_id)
         else:
             ordered = sorted(doc_payloads, key=_sort_key)
             summary_text = "\n".join(p.get("text") or "" for p in ordered)
@@ -285,3 +300,46 @@ async def retrieve_local(
         "rejected": extract_scored(rejected),
     }
     return msg, cites, files, diag
+
+
+async def retrieve_local_hits(
+    question: str,
+    top_k: int = MAX_ITEMS,
+    prefer_spravochnik: bool = True,
+) -> Tuple[List[Dict], Dict[str, list]]:
+    """Возвращает список payload'ов релевантных чанков без форматирования."""
+    emb = GigaChatEmbedder()
+    qvec = (await emb.embed([question]))[0]
+
+    if not prefer_spravochnik:
+        hits = qsearch(qvec, top_k=top_k)
+    else:
+        k1 = max(2, top_k // 2)
+        k2 = top_k - k1
+        h1 = qsearch(qvec, top_k=k1, source_filter="spravochnik")
+        h2 = qsearch(qvec, top_k=top_k)
+        seen = set(p.payload.get("id") for p in h1 if p.payload)
+        h2 = [p for p in h2 if p.payload and p.payload.get("id") not in seen]
+        hits = h1 + h2[:k2]
+
+    if not hits:
+        return [], {"passed": [], "rejected": []}
+
+    hits = hits[:top_k]
+    passed_payloads, passed_diag, rejected_diag = [], [], []
+    for h in hits:
+        sc = getattr(h, "score", None)
+        pl = h.payload or {}
+        if "id" not in pl:
+            pl["id"] = str(h.id)
+        if sc is None or sc >= THRESHOLD:
+            passed_payloads.append(pl)
+            passed_diag.append((pl, sc))
+        else:
+            rejected_diag.append((pl, sc))
+
+    diag = {
+        "passed": passed_diag,
+        "rejected": rejected_diag,
+    }
+    return passed_payloads, diag
