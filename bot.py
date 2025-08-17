@@ -295,8 +295,10 @@ async def handle_question(m: Message):
             topic = html.escape(pl.get("source") or "Источник")
             snippet = preview_from_payload(pl)
             kb = InlineKeyboardMarkup(
-                inline_keyboard=[[InlineKeyboardButton(text="✅", callback_data=f"accept_local:{idx}"),
-                                  InlineKeyboardButton(text="❌", callback_data=f"reject_local:{idx}")]]
+                inline_keyboard=[[
+                    InlineKeyboardButton(text="Показать полностью", callback_data=f"show_local:{idx}"),
+                    InlineKeyboardButton(text="Скрыть", callback_data=f"hide_local:{idx}")
+                ]]
             )
             await m.answer(f"<b>{topic}</b>\n{snippet}", parse_mode="HTML", reply_markup=kb)
         return
@@ -334,7 +336,7 @@ async def handle_question(m: Message):
         await asyncio.to_thread(mark_answered, question_id, "web")
 
 
-@router.callback_query(F.data.startswith("accept_local:"))
+@router.callback_query(F.data.startswith("show_local:"))
 async def accept_local(cb: CallbackQuery):
     try:
         idx = int(cb.data.split(":", 1)[1])
@@ -360,7 +362,7 @@ async def accept_local(cb: CallbackQuery):
     pending_local.pop(cb.from_user.id, None)
 
 
-@router.callback_query(F.data.startswith("reject_local:"))
+@router.callback_query(F.data.startswith("hide_local:"))
 async def reject_local(cb: CallbackQuery):
     try:
         idx = int(cb.data.split(":", 1)[1])
