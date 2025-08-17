@@ -7,11 +7,15 @@ import shutil
 import subprocess
 import tempfile
 import html
+import logging
 from typing import List
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # --- sys.path safety ---
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -520,10 +524,13 @@ async def _handle_question(m: Message, state: FSMContext):
     await m.answer("Ищу по локальной базе…", parse_mode="HTML")
     await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
     try:
+        logger.info("Starting local search for question: %s", q)
         hits, diag = await retrieve_local_hits(q, top_k=5, prefer_spravochnik=False)
+        logger.info("Local search finished, %d hits", len(hits))
     except RateLimitError:
         raise
     except Exception:
+        logger.exception("Error during local search")
         await msg.edit_text(
             "Произошла ошибка при поиске по локальной базе",
             parse_mode="HTML",
