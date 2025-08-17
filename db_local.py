@@ -1,6 +1,8 @@
 # db_local.py
-import os, sqlite3, datetime
-from typing import Optional, Tuple, Dict, Any
+import os
+import sqlite3
+import datetime
+from typing import Optional
 
 DB_PATH = os.getenv("APP_DB_PATH", "./app.db")
 
@@ -294,33 +296,21 @@ def get_question_mode(question_id: int) -> str | None:
         return row[0] if row else None
     finally:
         con.close()
-
-def fetch_questions(limit: int) -> list[dict[str, Any]]:
-    """Return recent questions with user info."""
+def get_last_mode_for_user(user_id: int) -> str | None:
+    """Возвращает последний выбранный пользователем режим источников."""
     con = _conn()
     try:
         cur = con.execute(
             """
-            SELECT u.tg_id, u.username, u.first_name, u.last_name, u.phone, q.question, q.created_at
-            FROM questions q
-            JOIN users u ON q.user_id = u.id
-            ORDER BY q.created_at DESC
-            LIMIT ?
+            SELECT qm.mode
+            FROM question_modes qm
+            JOIN questions q ON q.id = qm.question_id
+            WHERE q.user_id=?
+            ORDER BY qm.updated_at DESC
+            LIMIT 1
             """,
-            (limit,),
+            (user_id,),
         )
-        rows = cur.fetchall()
-        return [
-            {
-                "tg_id": r[0],
-                "username": r[1],
-                "first_name": r[2],
-                "last_name": r[3],
-                "phone": r[4],
-                "question": r[5],
-                "created_at": r[6],
-            }
-            for r in rows
-        ]
+        row = cur.fetchone()
     finally:
         con.close()

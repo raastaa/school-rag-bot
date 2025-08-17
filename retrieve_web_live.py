@@ -2,7 +2,11 @@
 from typing import Tuple, List, Dict
 from web_search import search_google_web
 
-async def retrieve_web_live(question: str, max_results: int = 5) -> Tuple[str, List[Dict]]:
+
+async def retrieve_web_live(
+    question: str, max_results: int = 5, mode: str | None = None
+) -> Tuple[str, List[Dict]]:
+    _ = mode  # параметр для совместимости интерфейса
     results = await search_google_web(question, num=max_results)
     if not results:
         return "В интернете релевантных результатов не найдено.", []

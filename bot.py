@@ -53,6 +53,8 @@ from db_local import (
     log_unanswered,
     log_answer_score,
     log_feedback,
+    set_question_mode,
+    get_last_mode_for_user,
     get_feedback_stats,
 )
 from gigachat_client import self_check_sufficiency
@@ -83,7 +85,15 @@ dp.include_router(router)
 dp.update.middleware(Throttle(0.7))
 
 # Храним для пользователей список найденных локальных ответов
-pending_local: dict[int, tuple[int, list[dict | None]]] = {}
+pending_local: dict[int, tuple[int, list[dict]]] = {}
+
+# Храним выбранный режим источников для каждого пользователя
+user_modes: dict[int, str] = {}
+MODE_LABELS = {
+    "all": "Все источники",
+    "local_site": "Локальная база + сайт",
+    "local": "Только локальная база",
+}
 
 
 # -------------------- вспомогалки UI/админ --------------------
@@ -321,7 +331,37 @@ async def examples(m: Message):
 
 @router.message(F.text == "Настройки источников")
 async def settings_sources(m: Message):
-    await m.answer("Настройки источников пока недоступны", parse_mode="HTML")
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Все источники", callback_data="src_mode:all")],
+            [
+                InlineKeyboardButton(
+                    text="Локальная база + сайт", callback_data="src_mode:local_site"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Только локальная база", callback_data="src_mode:local"
+                )
+            ],
+        ]
+    )
+    cur = user_modes.get(m.from_user.id, "all")
+    await m.answer(
+        f"Текущий режим: {MODE_LABELS.get(cur, cur)}\nВыберите режим:",
+        reply_markup=kb,
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data.startswith("src_mode:"))
+async def cb_set_mode(cb: CallbackQuery):
+    mode = cb.data.split(":", 1)[1]
+    user_modes[cb.from_user.id] = mode
+    await cb.answer("Сохранено")
+    await cb.message.edit_text(
+        f"Режим источников: {MODE_LABELS.get(mode, mode)}", parse_mode="HTML"
+    )
 
 
 @router.message(Command("help"))
@@ -465,23 +505,32 @@ async def handle_question(m: Message, state: FSMContext):
     user_id = await asyncio.to_thread(
         upsert_user, tg.id, tg.username, tg.first_name, tg.last_name, None
     )
+    mode = user_modes.get(tg.id)
+    if mode is None:
+        mode = await asyncio.to_thread(get_last_mode_for_user, user_id) or "all"
+        user_modes[tg.id] = mode
     question_id = await asyncio.to_thread(insert_question, user_id, q)
+    await asyncio.to_thread(set_question_mode, question_id, mode)
 
     # сообщение о ходе поиска
     msg = await m.answer("Ищу…", parse_mode="HTML")
 
     # Этап 1 — локальная база
-    await m.answer("Ищу по локальной базе…", parse_mode="HTML")
-    await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
-    hits, diag = await retrieve_local_hits(
-        combined_q, top_k=5, prefer_spravochnik=False
-    )
-
-    # Логируем все оценки (принятые и отфильтрованные)
-    for payload, score in diag.get("passed") or []:
-        await asyncio.to_thread(log_answer_score, question_id, payload, score, True)
-    for payload, score in diag.get("rejected") or []:
-        await asyncio.to_thread(log_answer_score, question_id, payload, score, False)
+    hits: list[dict] = []
+    diag: dict[str, list] = {}
+    if mode in {"all", "local_site", "local"}:
+        await m.answer("Ищу по локальной базе…", parse_mode="HTML")
+        await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
+        hits, diag = await retrieve_local_hits(
+            q, top_k=5, prefer_spravochnik=False, mode=mode
+        )
+        # Логируем все оценки (принятые и отфильтрованные)
+        for payload, score in diag.get("passed") or []:
+            await asyncio.to_thread(log_answer_score, question_id, payload, score, True)
+        for payload, score in diag.get("rejected") or []:
+            await asyncio.to_thread(
+                log_answer_score, question_id, payload, score, False
+            )
 
     if hits:
         await msg.edit_text("Нашёл ответы в локальной базе", parse_mode="HTML")
@@ -510,39 +559,58 @@ async def handle_question(m: Message, state: FSMContext):
             )
         snippets = [pl.get("text", "") for pl in hits[:3]]
         suff = await self_check_sufficiency(q, snippets)
-        if suff == "sufficient":
+        if suff == "sufficient" or mode == "local":
             return
         await m.answer(
             "Контекст неполный, ищу дополнительно на сайте…", parse_mode="HTML"
         )
+    else:
+        if mode == "local":
+            await msg.edit_text("В локальной базе ничего не найдено", parse_mode="HTML")
+            await m.answer(
+                "Не удалось найти ответ; уточните вопрос или загрузите документы",
+                parse_mode="HTML",
+            )
+            return
+        reason = "no_local_hits"
+        if diag.get("rejected") and not diag.get("passed"):
+            reason = "below_threshold"
+        await asyncio.to_thread(log_unanswered, question_id, reason)
 
-    # локально пусто: определим причину для unanswered
-    reason = "no_local_hits"
-    if diag.get("rejected") and not diag.get("passed"):
-        reason = "below_threshold"
-    await asyncio.to_thread(log_unanswered, question_id, reason)
 
     # Этап 2 — сайт smp.edu.ru
-    await msg.edit_text("Ищу на сайте smp.edu.ru…", parse_mode="HTML")
-    try:
-        site_text, site_results = await retrieve_site_live(combined_q, max_results=5)
-    except Exception as e:
-        site_text, site_results = (f"Ошибка поиска на сайте: {e}", [])
-    if site_results:
-        await msg.edit_text("Нашёл ответы на сайте smp.edu.ru", parse_mode="HTML")
-    else:
-        await msg.edit_text("На сайте smp.edu.ru ничего не найдено", parse_mode="HTML")
-    for chunk in _split_long(site_text):
-        await m.answer(chunk, parse_mode="HTML")
-
-    if site_results:
-        await asyncio.to_thread(mark_answered, question_id, "site")
+    site_results: list[dict] = []
+    if mode in {"all", "local_site"}:
+        await msg.edit_text("Ищу на сайте smp.edu.ru…", parse_mode="HTML")
+        try:
+            site_text, site_results = await retrieve_site_live(
+                q, max_results=5, mode=mode
+            )
+        except Exception as e:
+            site_text, site_results = (f"Ошибка поиска на сайте: {e}", [])
+        if site_results:
+            await msg.edit_text("Нашёл ответы на сайте smp.edu.ru", parse_mode="HTML")
+        else:
+            await msg.edit_text(
+                "На сайте smp.edu.ru ничего не найдено", parse_mode="HTML"
+            )
+        for chunk in _split_long(site_text):
+            await m.answer(chunk, parse_mode="HTML")
+        if site_results:
+            await asyncio.to_thread(mark_answered, question_id, "site")
+            return
+    if mode == "local_site":
+        await m.answer(
+            "Не удалось найти ответ; уточните вопрос или загрузите документы",
+            parse_mode="HTML",
+        )
+        return
 
     # Этап 3 — интернет (запускаем всегда, если нет локальных совпадений)
     await m.answer("Ищу в интернете…", parse_mode="HTML")
     await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
     try:
-        web_text, web_results = await retrieve_web_live(combined_q, max_results=5)
+        web_text, web_results = await retrieve_web_live(q, max_results=5, mode=mode)
     except Exception as e:
         web_text, web_results = (f"Ошибка веб-поиска: {e}", [])
     if web_results:
