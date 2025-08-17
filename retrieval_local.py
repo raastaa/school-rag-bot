@@ -4,22 +4,107 @@ from typing import List, Dict, Tuple
 import os
 import html
 import re
+from dataclasses import dataclass
+import numpy as np
+from rank_bm25 import BM25Okapi
 
-from gigachat_client import GigaChatEmbedder, chat
+from gigachat_client import GigaChatEmbedder, chat, generate_query_hyde
 from store_qdrant import search as qsearch, get_client
 from qdrant_client.models import Filter, FieldCondition, MatchValue
 
 # Параметры
-MAX_ITEMS      = 3
-SNIPPET_LIMIT  = 800
-NEIGH_BEFORE   = 0          # только центр
-NEIGH_AFTER    = 1          # и ОДИН чанк после
-THRESHOLD      = float(os.getenv("RELEVANCE_THRESHOLD", "0.82"))  # порог релевантности (>=)
+MAX_ITEMS = 3
+SNIPPET_LIMIT = 800
+NEIGH_BEFORE = 0  # только центр
+NEIGH_AFTER = 1  # и ОДИН чанк после
+THRESHOLD = float(os.getenv("RELEVANCE_THRESHOLD", "0.82"))  # порог релевантности (>=)
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "school_docs")
+RERANK_ENABLED = os.getenv("RERANK_ENABLED", "true").lower() not in {"0", "false"}
+
+
+@dataclass
+class Doc:
+    id: str
+    text: str
+    vector: List[float]
+    score: float
+    payload: Dict
+
+
+def _cosine(a: np.ndarray, b: np.ndarray) -> float:
+    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9))
+
+
+def select_chunks_mmr(
+    qv: np.ndarray, docs: List[Doc], k: int = 5, lam: float = 0.7
+) -> List[Doc]:
+    selected: List[Doc] = []
+    rest = docs[:]
+    while rest and len(selected) < k:
+        best, best_val = None, -1e9
+        for d in rest:
+            rel = _cosine(qv, np.array(d.vector))
+            div = (
+                0.0
+                if not selected
+                else max(
+                    _cosine(np.array(d.vector), np.array(s.vector)) for s in selected
+                )
+            )
+            val = lam * rel - (1.0 - lam) * div
+            if val > best_val:
+                best, best_val = d, val
+        selected.append(best)
+        rest.remove(best)
+    return selected
+
+
+def rerank_combined(query: str, docs: List[Doc], alpha: float = 0.7) -> List[Doc]:
+    if not docs:
+        return []
+    tokenized_corpus = [d.text.split() for d in docs]
+    bm25 = BM25Okapi(tokenized_corpus)
+    bm_scores = bm25.get_scores(query.split())
+    bm_scores = (bm_scores - bm_scores.min()) / (
+        bm_scores.max() - bm_scores.min() + 1e-9
+    )
+    vec_scores = np.array([d.score for d in docs])
+    vec_scores = (vec_scores - vec_scores.min()) / (
+        vec_scores.max() - vec_scores.min() + 1e-9
+    )
+    final = alpha * vec_scores + (1 - alpha) * bm_scores
+    ranked = sorted(zip(docs, final), key=lambda x: x[1], reverse=True)
+    return [d for d, _ in ranked]
+
+
+async def fused_search(queries: List[str], top_k: int = 5) -> List[Doc]:
+    emb = GigaChatEmbedder()
+    vecs = await emb.embed(queries)
+    docs: Dict[str, Doc] = {}
+    for q, vec in zip(queries, vecs):
+        hits = qsearch(vec, top_k=top_k * 2)
+        for h in hits:
+            pl = h.payload or {}
+            if "id" not in pl:
+                pl["id"] = str(h.id)
+            if pl["id"] not in docs:
+                docs[pl["id"]] = Doc(
+                    id=pl["id"],
+                    text=pl.get("text", ""),
+                    vector=h.vector or [],
+                    score=h.score or 0.0,
+                    payload=pl,
+                )
+    out = list(docs.values())
+    if RERANK_ENABLED:
+        out = rerank_combined(queries[0], out)
+    return out
+
 
 def _escape(t: str) -> str:
     # экранируем для parse_mode="HTML"
     return html.escape(t or "", quote=False)
+
 
 def _highlight_terms(text: str, query: str | None) -> str:
     """Экранирует текст и выделяет ключевые слова запроса тегом <b>."""
@@ -33,14 +118,16 @@ def _highlight_terms(text: str, query: str | None) -> str:
     pattern = re.compile("(" + "|".join(escaped_words) + ")", re.IGNORECASE)
     return pattern.sub(lambda m: f"<b>{m.group(0)}</b>", safe)
 
+
 def _block_header(pl: Dict) -> str:
-    src   = _escape(pl.get("source") or "Источник")
+    src = _escape(pl.get("source") or "Источник")
     p_from = pl.get("page_from")
     group = _escape(pl.get("source_group") or "local")
     head = f"Информация найдена в файле <b>{src}</b>"
     if p_from:
         head += f" (стр. {p_from})"
     return head
+
 
 def _concat_limit(parts: List[str], limit: int) -> str:
     text = "\n\n".join(p.strip() for p in parts if p)
@@ -51,12 +138,14 @@ def _concat_limit(parts: List[str], limit: int) -> str:
         cut = cut.rsplit(" ", 1)[0]
     return _escape(cut) + "…"
 
+
 def _sort_key(pl: Dict) -> tuple:
     seq = pl.get("seq")
-    pf  = pl.get("page_from") or 0
+    pf = pl.get("page_from") or 0
     pid = pl.get("id") or ""
     seq_key = seq if isinstance(seq, int) else -1
     return (seq_key, pf, str(pid))
+
 
 def _collect_doc_points(path: str, hard_cap: int = 5000) -> List[Dict]:
     """Читаем все точки по данному файлу (payload.path == path) через embedded-клиент."""
@@ -70,7 +159,9 @@ def _collect_doc_points(path: str, hard_cap: int = 5000) -> List[Dict]:
             limit=256,
             with_payload=True,
             offset=next_page,
-            scroll_filter=Filter(must=[FieldCondition(key="path", match=MatchValue(value=path))]),
+            scroll_filter=Filter(
+                must=[FieldCondition(key="path", match=MatchValue(value=path))]
+            ),
         )
         if not points:
             break
@@ -84,12 +175,15 @@ def _collect_doc_points(path: str, hard_cap: int = 5000) -> List[Dict]:
             break
     return out
 
+
 def _neighbors_preview(all_payloads: List[Dict], center_id: str) -> str:
     """Берём центр и 1 следующий чанк (окно NEIGH_BEFORE=0, NEIGH_AFTER=1)."""
     if not all_payloads:
         return ""
     all_sorted = sorted(all_payloads, key=_sort_key)
-    idx = next((i for i, pl in enumerate(all_sorted) if pl.get("id") == center_id), None)
+    idx = next(
+        (i for i, pl in enumerate(all_sorted) if pl.get("id") == center_id), None
+    )
     if idx is None:
         center = next((pl for pl in all_sorted if pl.get("id") == center_id), None)
         txt = (center.get("text") if center else "") or ""
@@ -98,6 +192,7 @@ def _neighbors_preview(all_payloads: List[Dict], center_id: str) -> str:
     hi = min(len(all_sorted), idx + NEIGH_AFTER + 1)
     parts = [pl.get("text") or "" for pl in all_sorted[lo:hi]]
     return _concat_limit(parts, SNIPPET_LIMIT)
+
 
 def _expand_paragraph(all_payloads: List[Dict], center_id: str) -> str:
     """Берём центр и расширяем до границ абзаца или главы.
@@ -128,6 +223,7 @@ def _expand_paragraph(all_payloads: List[Dict], center_id: str) -> str:
     para_end = len(full) if para_end == -1 else para_end
     return full[para_start:para_end].strip()
 
+
 async def _summarize_text(text: str) -> str:
     """Получаем короткое введение и алгоритм действий через GigaChat."""
     if not text:
@@ -145,6 +241,7 @@ async def _summarize_text(text: str) -> str:
         "Алгоритм действий:\n1. ..."
     )
     return await chat(prompt)
+
 
 def _expand_chapter(all_payloads: List[Dict], center_id: str) -> str:
     """Расширяем текст до границ условной главы.
@@ -172,6 +269,7 @@ def _expand_chapter(all_payloads: List[Dict], center_id: str) -> str:
     chap_end = full.find("\n\n", end_pos)
     chap_end = len(full) if chap_end == -1 else chap_end
     return full[chap_start:chap_end].strip()
+
 
 def extract_scored(hits: list) -> list[tuple[dict, float | None]]:
     """Удобно вытащить (payload, score) для логирования."""
@@ -210,7 +308,9 @@ async def format_answer_from_payload(pl: Dict) -> Tuple[str, List[Dict], List[st
             # одинаковым ответам. Теперь сначала пытаемся расширить
             # текст до границ ближайшего абзаца, а при отсутствии
             # результата — до условной главы.
-            summary_text = _expand_paragraph(doc_payloads, center_id) or _expand_chapter(doc_payloads, center_id)
+            summary_text = _expand_paragraph(
+                doc_payloads, center_id
+            ) or _expand_chapter(doc_payloads, center_id)
         else:
             ordered = sorted(doc_payloads, key=_sort_key)
             summary_text = "\n".join(p.get("text") or "" for p in ordered)
@@ -260,10 +360,9 @@ async def format_answer_from_payload(pl: Dict) -> Tuple[str, List[Dict], List[st
     msg = "\n".join(lines).strip()
     return msg, cites, list(files_set)
 
+
 async def retrieve_local(
-    question: str,
-    top_k: int = MAX_ITEMS,
-    prefer_spravochnik: bool = True
+    question: str, top_k: int = MAX_ITEMS, prefer_spravochnik: bool = True
 ) -> Tuple[str, List[Dict], List[str], Dict[str, list]]:
     """
     Возвращает:
@@ -284,7 +383,12 @@ async def retrieve_local(
         hits = h1 + h2[:k2]
 
     if not hits:
-        return "Ничего релевантного не найдено в локальном справочнике.", [], [], {"passed": [], "rejected": []}
+        return (
+            "Ничего релевантного не найдено в локальном справочнике.",
+            [],
+            [],
+            {"passed": [], "rejected": []},
+        )
 
     # обрежем по количеству и применим порог
     hits = hits[:top_k]
@@ -298,9 +402,12 @@ async def retrieve_local(
 
     if not passed:
         # совсем пусто после порога
-        return "Ничего релевантного не найдено в локальном справочнике.", [], [], {
-            "passed": [], "rejected": extract_scored(rejected)
-        }
+        return (
+            "Ничего релевантного не найдено в локальном справочнике.",
+            [],
+            [],
+            {"passed": [], "rejected": extract_scored(rejected)},
+        )
 
     h = passed[0]
     pl = h.payload or {}
@@ -320,38 +427,21 @@ async def retrieve_local_hits(
     prefer_spravochnik: bool = True,
 ) -> Tuple[List[Dict], Dict[str, list]]:
     """Возвращает список payload'ов релевантных чанков без форматирования."""
+    hyde_q = await generate_query_hyde(question, n=2)
+    docs = await fused_search([question] + hyde_q, top_k=top_k)
     emb = GigaChatEmbedder()
-    qvec = (await emb.embed([question]))[0]
+    qvec = np.array((await emb.embed([question]))[0])
+    docs_sel = select_chunks_mmr(qvec, docs, k=top_k)
 
-    if not prefer_spravochnik:
-        hits = qsearch(qvec, top_k=top_k)
-    else:
-        k1 = max(2, top_k // 2)
-        k2 = top_k - k1
-        h1 = qsearch(qvec, top_k=k1, source_filter="spravochnik")
-        h2 = qsearch(qvec, top_k=top_k)
-        seen = set(p.payload.get("id") for p in h1 if p.payload)
-        h2 = [p for p in h2 if p.payload and p.payload.get("id") not in seen]
-        hits = h1 + h2[:k2]
-
-    if not hits:
-        return [], {"passed": [], "rejected": []}
-
-    hits = hits[:top_k]
     passed_payloads, passed_diag, rejected_diag = [], [], []
-    for h in hits:
-        sc = getattr(h, "score", None)
-        pl = h.payload or {}
-        if "id" not in pl:
-            pl["id"] = str(h.id)
+    for d in docs_sel:
+        sc = d.score
+        pl = d.payload
         if sc is None or sc >= THRESHOLD:
             passed_payloads.append(pl)
             passed_diag.append((pl, sc))
         else:
             rejected_diag.append((pl, sc))
 
-    diag = {
-        "passed": passed_diag,
-        "rejected": rejected_diag,
-    }
+    diag = {"passed": passed_diag, "rejected": rejected_diag}
     return passed_payloads, diag

@@ -15,7 +15,7 @@
 
 import os
 import asyncio
-from typing import List, Sequence, Any, Optional
+from typing import List, Sequence, Any, Optional, Literal
 from dotenv import load_dotenv
 
 # официальный SDK
@@ -35,6 +35,7 @@ CA_BUNDLE = os.getenv("GIGACHAT_CA_BUNDLE", "").strip() or None
 # но сам SDK принимает только bool, поэтому оставляем системный truststore + возможность отключить проверку.
 VERIFY_SSL_CERTS: bool = VERIFY_SSL_ENV in ("1", "true", "yes")
 
+
 def _new_client() -> GigaChat:
     # По документации SDK: credentials (str), scope (optional),
     # model (optional), base_url (optional), verify_ssl_certs (optional).
@@ -51,6 +52,7 @@ def _new_client() -> GigaChat:
     # SDK не принимает путь к CA напрямую (только bool).
     return GigaChat(**kwargs)
 
+
 class GigaChatEmbedder:
     def __init__(self):
         if not CREDENTIALS:
@@ -63,7 +65,9 @@ class GigaChatEmbedder:
         # SDK-метод embeddings принимает texts=..., model=...
         res = self._client.embeddings(texts=list(texts), model=EMBEDDINGS_MODEL)
         # Ответ SDK может быть объектом с .data (элементы с .embedding)
-        data = getattr(res, "data", None) or (res.get("data") if isinstance(res, dict) else None)
+        data = getattr(res, "data", None) or (
+            res.get("data") if isinstance(res, dict) else None
+        )
         if not data:
             raise RuntimeError("Неожиданный формат ответа от GigaChat.embeddings()")
         out: List[List[float]] = []
@@ -79,6 +83,7 @@ class GigaChatEmbedder:
     async def embed(self, texts: Sequence[str]) -> List[List[float]]:
         return await asyncio.to_thread(self._embed_sync, texts)
 
+
 def _probe_dim_sync() -> int:
     cli = GigaChatEmbedder()
     vecs = cli._embed_sync(["dim_probe"])
@@ -86,31 +91,71 @@ def _probe_dim_sync() -> int:
         raise RuntimeError("Не удалось получить эмбеддинг для определения размерности.")
     return len(vecs[0])
 
+
 async def detect_dim() -> int:
     return await asyncio.to_thread(_probe_dim_sync)
 
-async def chat(prompt: str) -> str:
-    """Простой вызов chat-комплитов GigaChat.
 
-    Возвращает текст первого сообщения или пустую строку при ошибке.
-    """
+_LLM_SEM = asyncio.Semaphore(int(os.getenv("LLM_CONCURRENCY", "3")))
+
+
+async def chat(prompt: str, timeout: int = 30) -> str:
+    """Простой вызов chat-комплитов GigaChat с ретраями."""
     if not CREDENTIALS:
         return ""
-    cli = _new_client()
-    try:
-        resp = await cli.achat(prompt)
-        choices = getattr(resp, "choices", None) or []
-        if not choices:
-            return ""
-        msg = getattr(choices[0], "message", None)
-        content = getattr(msg, "content", "") if msg else ""
-        return content.strip()
-    except Exception:
-        return ""
-    finally:
-        try:
-            await cli.aclose()
-        except Exception:
-            pass
+    async with _LLM_SEM:
+        for attempt in range(3):
+            cli = _new_client()
+            try:
+                resp = await asyncio.wait_for(cli.achat(prompt), timeout=timeout)
+                choices = getattr(resp, "choices", None) or []
+                if not choices:
+                    return ""
+                msg = getattr(choices[0], "message", None)
+                content = getattr(msg, "content", "") if msg else ""
+                return content.strip()
+            except Exception:
+                if attempt == 2:
+                    return ""
+                await asyncio.sleep(2**attempt)
+            finally:
+                try:
+                    await cli.aclose()
+                except Exception:
+                    pass
 
-__all__ = ["GigaChatEmbedder", "detect_dim", "chat"]
+
+async def self_check_sufficiency(
+    query: str, snippets: list[str]
+) -> Literal["sufficient", "insufficient"]:
+    prompt = (
+        "Ты ассистент валидации. Дано: вопрос пользователя и 1-3 фрагмента из базы. "
+        "Определи, достаточно ли фрагментов, чтобы ответить точно. "
+        "Ответь одним словом: sufficient или insufficient.\n\n"
+        f"Вопрос: {query}\nФрагменты:\n- " + "\n- ".join(snippets[:3])
+    )
+    resp = await chat(prompt, timeout=15)
+    r = resp.strip().lower()
+    return "insufficient" if "insufficient" in r else "sufficient"
+
+
+async def generate_query_hyde(query: str, n: int = 2) -> list[str]:
+    out: list[str] = []
+    for _ in range(n):
+        prompt = (
+            "Сформулируй краткий перефраз вопроса для улучшения поиска.\n"
+            f"Вопрос: {query}"
+        )
+        txt = await chat(prompt, timeout=15)
+        if txt:
+            out.append(txt.strip())
+    return out
+
+
+__all__ = [
+    "GigaChatEmbedder",
+    "detect_dim",
+    "chat",
+    "self_check_sufficiency",
+    "generate_query_hyde",
+]

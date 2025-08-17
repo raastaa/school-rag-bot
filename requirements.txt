@@ -12,3 +12,11 @@ reportlab
 sqlalchemy
 tiktoken
 trafilatura
+rank-bm25
+python-pptx
+openpyxl
+pytest
+black
+ruff
+mypy
+pre-commit

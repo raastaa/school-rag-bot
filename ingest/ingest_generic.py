@@ -7,14 +7,31 @@ import argparse
 from typing import List, Dict, Any, Tuple
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
 from pypdf import PdfReader
+
 try:
     from docx import Document as Docx
+
     DOCX_AVAILABLE = True
 except Exception:
     DOCX_AVAILABLE = False
+
+try:
+    from pptx import Presentation
+
+    PPTX_AVAILABLE = True
+except Exception:
+    PPTX_AVAILABLE = False
+
+try:
+    import openpyxl
+
+    XLSX_AVAILABLE = True
+except Exception:
+    XLSX_AVAILABLE = False
 
 import zipfile
 from xml.etree import ElementTree as ET
@@ -22,7 +39,9 @@ from bs4 import BeautifulSoup
 import trafilatura
 
 # локальные утилиты
-from .pdf_ingest import read_pdf_pages as _read_pdf_pages  # можно использовать готовый из pdf_ingest
+from .pdf_ingest import (
+    read_pdf_pages as _read_pdf_pages,
+)  # можно использовать готовый из pdf_ingest
 from text_utils import (
     normalize_pdf_text,
     split_text_hard,
@@ -32,10 +51,13 @@ from text_utils import (
 )
 from gigachat_client import GigaChatEmbedder, detect_dim
 from store_qdrant import ensure_collection, upsert_chunks
+from db_local import has_chunk_hash, save_chunk_hash
+import hashlib
 
 SOURCE_GROUP_DEFAULT = "zabedu"
 
 # -------------------- readers --------------------
+
 
 def read_pdf(file_path: str) -> List[Tuple[int, str]]:
     """
@@ -55,6 +77,7 @@ def read_pdf(file_path: str) -> List[Tuple[int, str]]:
     except Exception:
         # fallback — через готовую функцию (если в вашем проекте она надёжнее)
         return _read_pdf_pages(file_path)
+
 
 def read_docx(file_path: str) -> str:
     """
@@ -86,11 +109,45 @@ def read_docx(file_path: str) -> str:
         return ""
 
 
+def read_pptx(file_path: str) -> str:
+    if not PPTX_AVAILABLE:
+        return ""
+    try:
+        prs = Presentation(file_path)
+        texts: List[str] = []
+        for slide in prs.slides:
+            for shape in slide.shapes:
+                if hasattr(shape, "text") and shape.text:
+                    texts.append(shape.text)
+        return "\n".join(texts).strip()
+    except Exception:
+        return ""
+
+
+def read_xlsx(file_path: str) -> str:
+    if not XLSX_AVAILABLE:
+        return ""
+    try:
+        wb = openpyxl.load_workbook(file_path, read_only=True)
+        texts: List[str] = []
+        for ws in wb.worksheets:
+            for row in ws.iter_rows(values_only=True):
+                row_txt = " ".join(str(c) for c in row if c is not None).strip()
+                if row_txt:
+                    texts.append(row_txt)
+        return "\n".join(texts).strip()
+    except Exception:
+        return ""
+
+
 def read_html(file_path: str) -> str:
     try:
         with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
             html = f.read()
-        txt = trafilatura.extract(html, include_formatting=False, include_links=False) or ""
+        txt = (
+            trafilatura.extract(html, include_formatting=False, include_links=False)
+            or ""
+        )
         if not txt:
             soup = BeautifulSoup(html, "html.parser")
             for s in soup(["script", "style", "noscript"]):
@@ -100,6 +157,7 @@ def read_html(file_path: str) -> str:
     except Exception:
         return ""
 
+
 def read_txt(file_path: str) -> str:
     try:
         with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
@@ -107,12 +165,12 @@ def read_txt(file_path: str) -> str:
     except Exception:
         return ""
 
+
 # -------------------- core ingest --------------------
 
+
 async def ingest_file(
-    file_path: str,
-    title: str | None = None,
-    source_group: str = SOURCE_GROUP_DEFAULT
+    file_path: str, title: str | None = None, source_group: str = SOURCE_GROUP_DEFAULT
 ) -> Dict[str, Any]:
     """
     Индексирует один файл в Qdrant. Поддержка: .pdf .docx .html/.htm .txt
@@ -130,31 +188,73 @@ async def ingest_file(
     pages = 0
 
     if ext == ".pdf":
-        pages_list = read_pdf(file_path)                    # [(p, text)]
+        pages_list = read_pdf(file_path)  # [(p, text)]
         pages = len(pages_list)
         # делим с учётом EMB_MAX + нормализованных страниц (page_from/page_to корректны)
         chunks = split_into_chunks(pages_list)
     elif ext == ".docx":
         t = read_docx(file_path)
         if not t:
-            return {"document": title or os.path.basename(file_path), "chunks": 0, "pages": 0, "file": abs_path}
+            return {
+                "document": title or os.path.basename(file_path),
+                "chunks": 0,
+                "pages": 0,
+                "file": abs_path,
+            }
         parts = split_text_hard(t, EMB_MAX)
         chunks = [(p, None, None) for p in parts]
     elif ext in (".html", ".htm"):
         t = read_html(file_path)
         if not t:
-            return {"document": title or os.path.basename(file_path), "chunks": 0, "pages": 0, "file": abs_path}
+            return {
+                "document": title or os.path.basename(file_path),
+                "chunks": 0,
+                "pages": 0,
+                "file": abs_path,
+            }
         parts = split_text_hard(t, EMB_MAX)
         chunks = [(p, None, None) for p in parts]
     elif ext == ".txt":
         t = read_txt(file_path)
         if not t:
-            return {"document": title or os.path.basename(file_path), "chunks": 0, "pages": 0, "file": abs_path}
+            return {
+                "document": title or os.path.basename(file_path),
+                "chunks": 0,
+                "pages": 0,
+                "file": abs_path,
+            }
+        parts = split_text_hard(t, EMB_MAX)
+        chunks = [(p, None, None) for p in parts]
+    elif ext == ".pptx":
+        t = read_pptx(file_path)
+        if not t:
+            return {
+                "document": title or os.path.basename(file_path),
+                "chunks": 0,
+                "pages": 0,
+                "file": abs_path,
+            }
+        parts = split_text_hard(t, EMB_MAX)
+        chunks = [(p, None, None) for p in parts]
+    elif ext in (".xlsx", ".xlsm"):
+        t = read_xlsx(file_path)
+        if not t:
+            return {
+                "document": title or os.path.basename(file_path),
+                "chunks": 0,
+                "pages": 0,
+                "file": abs_path,
+            }
         parts = split_text_hard(t, EMB_MAX)
         chunks = [(p, None, None) for p in parts]
     else:
         # неизвестный тип — пропускаем
-        return {"document": title or os.path.basename(file_path), "chunks": 0, "pages": 0, "file": abs_path}
+        return {
+            "document": title or os.path.basename(file_path),
+            "chunks": 0,
+            "pages": 0,
+            "file": abs_path,
+        }
 
     # 3) формируем payloads/texts для записи в векторное хранилище
     texts: List[str] = []
@@ -163,19 +263,25 @@ async def ingest_file(
     doc_title = title or os.path.basename(file_path)
 
     for text_c, p_from, p_to in chunks:
-        payloads.append({
-            "id": str(uuid.uuid4()),
-            "seq": seq,                          # порядок чанка в документе
-            "source": os.path.basename(file_path),
-            "source_group": source_group,        # например: "zabedu" / "strategy" / "spravochnik"
-            "title": doc_title,
-            "page_from": p_from,
-            "page_to": p_to,
-            "path": abs_path,
-            "type": ext.lstrip("."),
-            "token_count": count_tokens(text_c),
-            "text": text_c[:1000],              # короткий превью-текст (для выдачи)
-        })
+        h = hashlib.sha256(text_c.strip().encode("utf-8")).hexdigest()
+        if has_chunk_hash(h):
+            continue
+        save_chunk_hash(h, abs_path, seq)
+        payloads.append(
+            {
+                "id": str(uuid.uuid4()),
+                "seq": seq,
+                "source": os.path.basename(file_path),
+                "source_group": source_group,
+                "title": doc_title,
+                "page_from": p_from,
+                "page_to": p_to,
+                "path": abs_path,
+                "type": ext.lstrip("."),
+                "token_count": count_tokens(text_c),
+                "text": text_c[:1000],
+            }
+        )
         texts.append(text_c)
         seq += 1
 
@@ -184,8 +290,8 @@ async def ingest_file(
     total = 0
     BATCH = int(os.getenv("EMBEDDING_BATCH", "64"))
     for i in range(0, len(texts), BATCH):
-        batch_vecs = await embedder.embed(texts[i:i + BATCH])
-        upsert_chunks(batch_vecs, payloads[i:i + BATCH])
+        batch_vecs = await embedder.embed(texts[i : i + BATCH])
+        upsert_chunks(batch_vecs, payloads[i : i + BATCH])
         total += len(batch_vecs)
 
     return {
@@ -196,10 +302,20 @@ async def ingest_file(
         "source_group": source_group,
     }
 
+
 async def ingest_path(
     root: str,
     source_group: str = SOURCE_GROUP_DEFAULT,
-    exts: Tuple[str, ...] = (".pdf", ".docx", ".html", ".htm", ".txt")
+    exts: Tuple[str, ...] = (
+        ".pdf",
+        ".docx",
+        ".html",
+        ".htm",
+        ".txt",
+        ".pptx",
+        ".xlsx",
+        ".xlsm",
+    ),
 ) -> Dict[str, int]:
     """
     Рекурсивно обходит директорию и индексирует все поддерживаемые файлы.
@@ -215,18 +331,28 @@ async def ingest_path(
                 try:
                     res = await ingest_file(fp, title=name, source_group=source_group)
                     total_chunks += res.get("chunks", 0)
-                    print(f"[OK] {name}: chunks={res.get('chunks')} pages={res.get('pages')}")
+                    print(
+                        f"[OK] {name}: chunks={res.get('chunks')} pages={res.get('pages')}"
+                    )
                 except Exception as e:
                     print(f"[FAIL] {name}: {e}")
     return {"files": total_files, "chunks": total_chunks}
+
 
 # -------------------- CLI --------------------
 
 if __name__ == "__main__":
     import asyncio
+
     ap = argparse.ArgumentParser()
-    ap.add_argument("--path", required=True, help="Папка с файлами (распакованный архив)")
-    ap.add_argument("--group", default=SOURCE_GROUP_DEFAULT, help="source_group для Qdrant (по умолчанию zabedu)")
+    ap.add_argument(
+        "--path", required=True, help="Папка с файлами (распакованный архив)"
+    )
+    ap.add_argument(
+        "--group",
+        default=SOURCE_GROUP_DEFAULT,
+        help="source_group для Qdrant (по умолчанию zabedu)",
+    )
     args = ap.parse_args()
 
     print("Indexing:", args.path, "group:", args.group)
