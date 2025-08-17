@@ -21,6 +21,18 @@ def _escape(t: str) -> str:
     # экранируем для parse_mode="HTML"
     return html.escape(t or "", quote=False)
 
+def _highlight_terms(text: str, query: str | None) -> str:
+    """Экранирует текст и выделяет ключевые слова запроса тегом <b>."""
+    safe = _escape(text)
+    if not query:
+        return safe
+    words = [w for w in re.split(r"\s+", query) if w]
+    if not words:
+        return safe
+    escaped_words = [re.escape(_escape(w)) for w in words]
+    pattern = re.compile("(" + "|".join(escaped_words) + ")", re.IGNORECASE)
+    return pattern.sub(lambda m: f"<b>{m.group(0)}</b>", safe)
+
 def _block_header(pl: Dict) -> str:
     src   = _escape(pl.get("source") or "Источник")
     p_from = pl.get("page_from")
@@ -169,7 +181,7 @@ def extract_scored(hits: list) -> list[tuple[dict, float | None]]:
     return out
 
 
-def preview_from_payload(pl: Dict) -> str:
+def preview_from_payload(pl: Dict, query: str | None = None) -> str:
     """Возвращает короткий фрагмент текста (до двух предложений) для превью."""
     path = pl.get("path")
     center_id = pl.get("id")
@@ -177,7 +189,7 @@ def preview_from_payload(pl: Dict) -> str:
     txt = _neighbors_preview(doc_payloads, center_id)
     sentences = re.split(r"(?<=[.!?])\s+", txt.strip())
     preview = " ".join(sentences[:2]).strip()
-    return _escape(preview)
+    return _highlight_terms(preview, query)
 
 
 async def format_answer_from_payload(pl: Dict) -> Tuple[str, List[Dict], List[str]]:

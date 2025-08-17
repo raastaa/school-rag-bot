@@ -308,7 +308,7 @@ async def handle_question(m: Message):
         pending_local[m.from_user.id] = hits
         for idx, pl in enumerate(hits):
             topic = html.escape(pl.get("source") or "Источник")
-            snippet = preview_from_payload(pl)
+            snippet = preview_from_payload(pl, q)
             kb = InlineKeyboardMarkup(
                 inline_keyboard=[[
                     InlineKeyboardButton(text="Показать полностью", callback_data=f"show_local:{idx}"),
