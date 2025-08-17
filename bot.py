@@ -1,4 +1,5 @@
 # bot.py
+# ruff: noqa: E402
 import os
 import sys
 import asyncio
@@ -70,6 +71,7 @@ ADMIN_IDS = {
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "school_docs")
 TEACH_DIR = os.getenv("TEACH_DIR", "./teach")
 UPLOADS_DIR = os.getenv("UPLOADS_DIR", "./uploads")
+HISTORY_LIMIT = int(os.getenv("HISTORY_LIMIT", "3"))
 
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
@@ -79,7 +81,7 @@ dp.include_router(router)
 dp.update.middleware(Throttle(0.7))
 
 # Храним для пользователей список найденных локальных ответов
-pending_local: dict[int, list] = {}
+pending_local: dict[int, tuple[int, list[dict | None]]] = {}
 
 
 # -------------------- вспомогалки UI/админ --------------------
@@ -116,7 +118,9 @@ def _split_long(text: str, limit: int = 4000) -> list[str]:
     """Режем длинное сообщение для Telegram (лимит ~4096)."""
     if not text:
         return [""]
-    out, cur, cur_len = [], [], 0
+    out: list[str] = []
+    cur: list[str] = []
+    cur_len = 0
     for para in text.split("\n\n"):
         add = para + "\n\n"
         if cur_len + len(add) > limit and cur:
@@ -320,7 +324,8 @@ async def cmd_help(m: Message):
     text = (
         "Доступные команды:\n"
         "• /start — приветственное сообщение\n"
-        "• /help — показать эту справку"
+        "• /help — показать эту справку\n"
+        "• /new — начать новый диалог"
     )
     if is_adm:
         text += (
@@ -330,6 +335,13 @@ async def cmd_help(m: Message):
         await m.answer(text, reply_markup=admin_kb(), parse_mode="HTML")
     else:
         await m.answer(text, parse_mode="HTML")
+
+
+@router.message(Command("new"))
+async def cmd_new(m: Message, state: FSMContext):
+    pending_local.pop(m.from_user.id, None)
+    await state.clear()
+    await m.answer("Контекст сброшен.", parse_mode="HTML")
 
 
 @router.message(Command("clear_index"))
@@ -389,15 +401,19 @@ async def cmd_ingest_teach(m: Message):
         }
     )
 )
-async def handle_question(m: Message):
+async def handle_question(m: Message, state: FSMContext):
     q = m.text.strip()
+
+    data = await state.get_data()
+    history: List[str] = data.get("history", [])
+    combined_q = "\n".join(history + [q]) if history else q
+    history.append(q)
+    await state.update_data(history=history[-HISTORY_LIMIT:])
 
     # Сброс предыдущих локальных выдач для пользователя
     pending_local.pop(m.from_user.id, None)
 
     # 0) БД: логируем пользователя и вопрос
-    from db_local import DB_PATH  # только ради удобной отладки
-
     tg = m.from_user
     user_id = await asyncio.to_thread(
         upsert_user, tg.id, tg.username, tg.first_name, tg.last_name
@@ -410,7 +426,9 @@ async def handle_question(m: Message):
     # Этап 1 — локальная база
     await m.answer("Ищу по локальной базе…", parse_mode="HTML")
     await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
-    hits, diag = await retrieve_local_hits(q, top_k=5, prefer_spravochnik=False)
+    hits, diag = await retrieve_local_hits(
+        combined_q, top_k=5, prefer_spravochnik=False
+    )
 
     # Логируем все оценки (принятые и отфильтрованные)
     for payload, score in diag.get("passed") or []:
@@ -420,8 +438,11 @@ async def handle_question(m: Message):
 
     if hits:
         await msg.edit_text("Нашёл ответы в локальной базе", parse_mode="HTML")
-        pending_local[m.from_user.id] = (question_id, hits)
-        for idx, pl in enumerate(hits):
+        hits_list: list[dict | None] = list(hits)
+        pending_local[m.from_user.id] = (question_id, hits_list)
+        for idx, pl in enumerate(hits_list):
+            if pl is None:
+                continue
             topic = html.escape(pl.get("source") or "Источник")
             snippet = preview_from_payload(pl, q)
             kb = InlineKeyboardMarkup(
@@ -456,7 +477,7 @@ async def handle_question(m: Message):
     # Этап 2 — сайт smp.edu.ru
     await msg.edit_text("Ищу на сайте smp.edu.ru…", parse_mode="HTML")
     try:
-        site_text, site_results = await retrieve_site_live(q, max_results=5)
+        site_text, site_results = await retrieve_site_live(combined_q, max_results=5)
     except Exception as e:
         site_text, site_results = (f"Ошибка поиска на сайте: {e}", [])
     if site_results:
@@ -474,7 +495,7 @@ async def handle_question(m: Message):
     await m.answer("Ищу в интернете…", parse_mode="HTML")
     await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
     try:
-        web_text, web_results = await retrieve_web_live(q, max_results=5)
+        web_text, web_results = await retrieve_web_live(combined_q, max_results=5)
     except Exception as e:
         web_text, web_results = (f"Ошибка веб-поиска: {e}", [])
     if web_results:
@@ -509,6 +530,9 @@ async def accept_local(cb: CallbackQuery):
         await cb.answer("Ответ не найден")
         return
     pl = hits[idx]
+    if pl is None:
+        await cb.answer("Ответ не найден")
+        return
     msg_text, cites, files = await format_answer_from_payload(pl)
     await cb.message.edit_reply_markup()
     for chunk in _split_long(msg_text):
