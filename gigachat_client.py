@@ -20,8 +20,15 @@ from dotenv import load_dotenv
 
 # официальный SDK
 from gigachat import GigaChat
+from gigachat.exceptions import ResponseError
 
 load_dotenv()
+
+
+class RateLimitError(RuntimeError):
+    """Превышен лимит запросов к GigaChat."""
+
+
 
 CREDENTIALS = os.getenv("GIGACHAT_CREDENTIALS", "")
 SCOPE = os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS")
@@ -63,7 +70,12 @@ class GigaChatEmbedder:
         if not texts:
             return []
         # SDK-метод embeddings принимает texts=..., model=...
-        res = self._client.embeddings(texts=list(texts), model=EMBEDDINGS_MODEL)
+        try:
+            res = self._client.embeddings(texts=list(texts), model=EMBEDDINGS_MODEL)
+        except ResponseError as e:  # noqa: PERF203
+            if len(e.args) > 1 and e.args[1] == 429:
+                raise RateLimitError("Too Many Requests") from e
+            raise
         # Ответ SDK может быть объектом с .data (элементы с .embedding)
         data = getattr(res, "data", None) or (
             res.get("data") if isinstance(res, dict) else None
@@ -114,6 +126,12 @@ async def chat(prompt: str, timeout: int = 30) -> str:
                 msg = getattr(choices[0], "message", None)
                 content = getattr(msg, "content", "") if msg else ""
                 return content.strip()
+            except ResponseError as e:  # noqa: PERF203
+                if len(e.args) > 1 and e.args[1] == 429:
+                    raise RateLimitError("Too Many Requests") from e
+                if attempt == 2:
+                    return ""
+                await asyncio.sleep(2**attempt)
             except Exception:
                 if attempt == 2:
                     return ""
@@ -158,4 +176,5 @@ __all__ = [
     "chat",
     "self_check_sufficiency",
     "generate_query_hyde",
+    "RateLimitError",
 ]

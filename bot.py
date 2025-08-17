@@ -57,7 +57,7 @@ from db_local import (
     get_last_mode_for_user,
     fetch_questions,
 )
-from gigachat_client import self_check_sufficiency
+from gigachat_client import self_check_sufficiency, RateLimitError
 from watcher import start_watcher
 
 # Этапы 2/3 (поиск по сайту / по вебу) — должны быть в проекте
@@ -94,6 +94,10 @@ MODE_LABELS = {
     "local_site": "Локальная база + сайт",
     "local": "Только локальная база",
 }
+
+# Очередь вопросов при превышении лимита запросов к GigaChat
+REQUEST_INTERVAL = 1.0
+pending_questions: asyncio.Queue[tuple[Message, FSMContext]] = asyncio.Queue()
 
 
 # -------------------- вспомогалки UI/админ --------------------
@@ -486,19 +490,7 @@ async def cmd_query_history(m: Message):
 
 
 # -------------------- обработка вопроса пользователя --------------------
-@router.message(
-    F.text
-    & ~F.text.in_(
-        {
-            "➕ Добавить документ",
-            "Добавить документ",
-            "Задать вопрос",
-            "Примеры запросов",
-            "Настройки источников",
-        }
-    )
-)
-async def handle_question(m: Message, state: FSMContext):
+async def _handle_question(m: Message, state: FSMContext):
     q = m.text.strip()
 
     data = await state.get_data()
@@ -529,6 +521,8 @@ async def handle_question(m: Message, state: FSMContext):
     await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
     try:
         hits, diag = await retrieve_local_hits(q, top_k=5, prefer_spravochnik=False)
+    except RateLimitError:
+        raise
     except Exception:
         await msg.edit_text(
             "Произошла ошибка при поиске по локальной базе",
@@ -596,6 +590,8 @@ async def handle_question(m: Message, state: FSMContext):
     await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
     try:
         site_text, site_results = await retrieve_site_live(q, max_results=5)
+    except RateLimitError:
+        raise
     except Exception:
         site_text, site_results = (
             "Не удалось выполнить поиск на сайте. Попробуйте позже.",
@@ -617,6 +613,8 @@ async def handle_question(m: Message, state: FSMContext):
     await bot.send_chat_action(m.chat.id, ChatAction.TYPING)
     try:
         web_text, web_results = await retrieve_web_live(q, max_results=5)
+    except RateLimitError:
+        raise
     except Exception:
         web_text, web_results = (
             "Не удалось выполнить веб-поиск. Попробуйте позже.",
@@ -651,6 +649,42 @@ async def handle_question(m: Message, state: FSMContext):
             "Не удалось найти ответ; уточните вопрос или загрузите документы",
             parse_mode="HTML",
         )
+
+@router.message(
+    F.text
+    & ~F.text.in_(
+        {
+            "➕ Добавить документ",
+            "Добавить документ",
+            "Задать вопрос",
+            "Примеры запросов",
+            "Настройки источников",
+        }
+    )
+)
+async def handle_question(m: Message, state: FSMContext):
+    try:
+        await _handle_question(m, state)
+    except RateLimitError:
+        position = pending_questions.qsize()
+        wait_time = (position + 1) * REQUEST_INTERVAL
+        await m.answer(
+            f"Превышен лимит запросов. Ваш вопрос поставлен в очередь. Примерное время ожидания: {int(wait_time)} сек.",
+            parse_mode="HTML",
+        )
+        await pending_questions.put((m, state))
+
+
+async def process_queue():
+    while True:
+        m, state = await pending_questions.get()
+        await asyncio.sleep(REQUEST_INTERVAL)
+        try:
+            await _handle_question(m, state)
+        except RateLimitError:
+            await pending_questions.put((m, state))
+        finally:
+            pending_questions.task_done()
 
 
 @router.callback_query(F.data.startswith("show_local:"))
@@ -733,6 +767,7 @@ async def feedback_handler(cb: CallbackQuery):
 async def main():
     init_db()  # создаём таблицы при старте
     asyncio.create_task(start_watcher([TEACH_DIR, UPLOADS_DIR]))
+    asyncio.create_task(process_queue())
     await dp.start_polling(bot)
 
 
