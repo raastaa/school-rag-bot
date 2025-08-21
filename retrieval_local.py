@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import List, Dict, Tuple
 import os
 import html
+import re
 
 from gigachat_client import GigaChatEmbedder, chat
 from store_qdrant import search as qsearch, get_client
@@ -128,6 +129,28 @@ async def _summarize_text(text: str) -> str:
     print(result)
     return result
 
+
+async def _score_answer(question: str, text: str) -> float:
+    """Оценивает релевантность фрагмента вопросу через GigaChat (0..1)."""
+    if not text:
+        return 0.0
+    prompt = (
+        f"Вопрос:\n{question}\n\n"
+        f"Фрагмент:\n{text}\n\n"
+        "Оцени насколько фрагмент отвечает на вопрос по шкале от 0 до 1. "
+        "Ответь только числом." 
+    )
+    resp = await chat(prompt)
+    if not resp:
+        return 0.0
+    val = resp.strip().replace(",", ".")
+    try:
+        score = float(val)
+    except ValueError:
+        m = re.search(r"0?\.\d+|1(?:\.0+)?", val)
+        score = float(m.group()) if m else 0.0
+    return max(0.0, min(1.0, score))
+
 def extract_scored(hits: list) -> list[tuple[dict, float | None]]:
     """Удобно вытащить (payload, score) для логирования."""
     out = []
@@ -142,7 +165,7 @@ async def retrieve_local(
 ) -> Tuple[str, List[Dict], List[str], Dict[str, list]]:
     """
     Возвращает:
-      msg_text (HTML), cites (для ссылок/метаданных), files (пути к файлам), diag({'passed','rejected'}).
+      msg_text (HTML), cites (для ссылок/метаданных), files (пути к файлам), diag({'passed','rejected','gigachat'}).
     """
     print(f"[retrieve_local] question: {question}")
     emb = GigaChatEmbedder()
@@ -184,99 +207,106 @@ async def retrieve_local(
             "passed": [], "rejected": extract_scored(rejected)
         }
 
-    lines: List[str] = []
-    cites: List[Dict] = []
-    files_seen = set()
-    files_out: List[str] = []
-
+    doc_cache: Dict[str, List[Dict]] = {}
+    scored: List[tuple] = []
     for h in passed:
         pl = h.payload or {}
-        print(pl)
         path = pl.get("path")
-        if path and path in files_seen:
-            continue
         center_id = pl.get("id") or str(h.id)
-        header = _block_header(pl)
-        score = getattr(h, "score", None)
-        score_txt = ""
-        if score is not None:
-            score_pct = int(round(score * 100))
-            score_txt = f" — коэфф. совпадения {score_pct}%"
-
-        doc_payloads = _collect_doc_points(path) if path else []
+        if path not in doc_cache:
+            doc_cache[path] = _collect_doc_points(path) if path else []
+        doc_payloads = doc_cache[path]
         preview = _neighbors_preview(doc_payloads, center_id)
+        gc_score = await _score_answer(question, preview)
+        scored.append((h, gc_score, preview, doc_payloads))
 
-        summary = ""
-        if path:
-            print(f"[retrieve_local] summarizing for file: {path}")
-            summary_text = ""
-            if pl.get("page_from"):
-                pf = pl.get("page_from") or 1
-                pt = pl.get("page_to") or pf
-                start_p = pf - 2
-                end_p = pt + 2
-                snippet_chunks: List[str] = []
-                for pld in doc_payloads:
-                    p_page = pld.get("page_from") or 0
-                    if start_p <= p_page <= end_p:
-                        snippet_chunks.append(pld.get("text") or "")
-                print("[snippet_chunks]",snippet_chunks)
-                summary_text = "\n".join(snippet_chunks)
-            else:
-                ordered = sorted(doc_payloads, key=_sort_key)
-                summary_text = "\n".join(p.get("text") or "" for p in ordered)
-            # print("[retrieve_local] text sent to GigaChat:")
-            # print(summary_text)
-            summary_raw = await _summarize_text(summary_text)
-            if summary_raw:
-                sr = summary_raw.strip()
-                lines_sr = sr.splitlines()
-                cleaned: List[str] = []
-                started = False
-                for line in lines_sr:
-                    low = line.lower().lstrip()
-                    if not started:
-                        if "краткая выжимка" in low:
-                            started = True
-                            continue
-                        if low.startswith("запрос:") or low.startswith("источник:") or low.startswith("общая информация:"):
-                            continue
-                    cleaned.append(line)
-                    started = True
-                sr = "\n".join(cleaned).strip()
-                marker = "Алгоритм действий:"
-                if marker in sr:
-                    before, alg = sr.split(marker, 1)
-                    before_html = _escape(before.strip())
-                    alg_html = _escape(marker + "\n" + alg.strip())
-                    prefix = f"{before_html}\n" if before_html else ""
-                    summary = f"{prefix}<b>{alg_html}</b>"
-                else:
-                    summary = _escape(sr)
-        block = f"{header}{score_txt}"
-        if summary:
-            block += f"\nКраткое описание:\n{summary}"
-        lines.append(block)
-        cites.append({
-            "source": pl.get("source"),
-            "page_from": pl.get("page_from"),
-            "path": path,
-            "text": preview
-        })
-        if path:
-            if pl.get("source_group") == "spravochnik" and pl.get("page_from"):
-                pf = pl.get("page_from") or 1
-                pt = pl.get("page_to") or pf
-                snippet = _slice_pdf_pages(path, pf - 2, pt + 2)
-                files_out.append(snippet)
-            else:
-                files_out.append(path)
-            files_seen.add(path)
+    if not scored:
+        return "Ничего релевантного не найдено в локальном справочнике.", [], [], {
+            "passed": extract_scored(passed),
+            "rejected": extract_scored(rejected),
+        }
 
-    msg = "\n\n".join(lines).strip()
-    # print(f"[retrieve_local] final message: {msg}")
+    scored.sort(key=lambda x: x[1], reverse=True)
+    best_h, _, best_preview, best_doc_payloads = scored[0]
+    pl = best_h.payload or {}
+    path = pl.get("path")
+
+    header = _block_header(pl)
+    score = getattr(best_h, "score", None)
+    score_txt = ""
+    if score is not None:
+        score_pct = int(round(score * 100))
+        score_txt = f" — коэфф. совпадения {score_pct}%"
+
+    summary = ""
+    if path:
+        print(f"[retrieve_local] summarizing for file: {path}")
+        if pl.get("page_from"):
+            pf = pl.get("page_from") or 1
+            pt = pl.get("page_to") or pf
+            start_p = pf - 2
+            end_p = pt + 2
+            snippet_chunks: List[str] = []
+            for pld in best_doc_payloads:
+                p_page = pld.get("page_from") or 0
+                if start_p <= p_page <= end_p:
+                    snippet_chunks.append(pld.get("text") or "")
+            summary_text = "\n".join(snippet_chunks)
+        else:
+            ordered = sorted(best_doc_payloads, key=_sort_key)
+            summary_text = "\n".join(p.get("text") or "" for p in ordered)
+        summary_raw = await _summarize_text(summary_text)
+        if summary_raw:
+            sr = summary_raw.strip()
+            lines_sr = sr.splitlines()
+            cleaned: List[str] = []
+            started = False
+            for line in lines_sr:
+                low = line.lower().lstrip()
+                if not started:
+                    if "краткая выжимка" in low:
+                        started = True
+                        continue
+                    if low.startswith("запрос:") or low.startswith("источник:") or low.startswith("общая информация:"):
+                        continue
+                cleaned.append(line)
+                started = True
+            sr = "\n".join(cleaned).strip()
+            marker = "Алгоритм действий:"
+            if marker in sr:
+                before, alg = sr.split(marker, 1)
+                before_html = _escape(before.strip())
+                alg_html = _escape(marker + "\n" + alg.strip())
+                prefix = f"{before_html}\n" if before_html else ""
+                summary = f"{prefix}<b>{alg_html}</b>"
+            else:
+                summary = _escape(sr)
+
+    block = f"{header}{score_txt}"
+    if summary:
+        block += f"\nКраткое описание:\n{summary}"
+    msg = block.strip()
+
+    cites = [{
+        "source": pl.get("source"),
+        "page_from": pl.get("page_from"),
+        "path": path,
+        "text": best_preview,
+    }]
+
+    files_out: List[str] = []
+    if path:
+        if pl.get("source_group") == "spravochnik" and pl.get("page_from"):
+            pf = pl.get("page_from") or 1
+            pt = pl.get("page_to") or pf
+            snippet = _slice_pdf_pages(path, pf - 2, pt + 2)
+            files_out.append(snippet)
+        else:
+            files_out.append(path)
+
     diag = {
         "passed": extract_scored(passed),
         "rejected": extract_scored(rejected),
+        "gigachat": [(getattr(h, "payload", None) or {}, sc) for h, sc, _, _ in scored],
     }
     return msg, cites, files_out, diag
