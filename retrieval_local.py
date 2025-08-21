@@ -191,6 +191,7 @@ async def retrieve_local(
 
     for h in passed:
         pl = h.payload or {}
+        print(pl)
         path = pl.get("path")
         if path and path in files_seen:
             continue
@@ -209,7 +210,7 @@ async def retrieve_local(
         if path:
             print(f"[retrieve_local] summarizing for file: {path}")
             summary_text = ""
-            if pl.get("source_group") == "spravochnik" and pl.get("page_from"):
+            if pl.get("page_from"):
                 pf = pl.get("page_from") or 1
                 pt = pl.get("page_to") or pf
                 start_p = pf - 2
@@ -219,12 +220,13 @@ async def retrieve_local(
                     p_page = pld.get("page_from") or 0
                     if start_p <= p_page <= end_p:
                         snippet_chunks.append(pld.get("text") or "")
+                print("[snippet_chunks]",snippet_chunks)
                 summary_text = "\n".join(snippet_chunks)
             else:
                 ordered = sorted(doc_payloads, key=_sort_key)
                 summary_text = "\n".join(p.get("text") or "" for p in ordered)
-            print("[retrieve_local] text sent to GigaChat:")
-            print(summary_text)
+            # print("[retrieve_local] text sent to GigaChat:")
+            # print(summary_text)
             summary_raw = await _summarize_text(summary_text)
             if summary_raw:
                 sr = summary_raw.strip()
@@ -272,7 +274,7 @@ async def retrieve_local(
             files_seen.add(path)
 
     msg = "\n\n".join(lines).strip()
-    print(f"[retrieve_local] final message: {msg}")
+    # print(f"[retrieve_local] final message: {msg}")
     diag = {
         "passed": extract_scored(passed),
         "rejected": extract_scored(rejected),
