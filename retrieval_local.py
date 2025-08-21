@@ -7,6 +7,7 @@ import html
 from gigachat_client import GigaChatEmbedder, chat
 from store_qdrant import search as qsearch, get_client
 from qdrant_client.models import Filter, FieldCondition, MatchValue
+from pypdf import PdfReader, PdfWriter
 
 # Параметры
 MAX_ITEMS      = 3
@@ -44,6 +45,26 @@ def _sort_key(pl: Dict) -> tuple:
     pid = pl.get("id") or ""
     seq_key = seq if isinstance(seq, int) else -1
     return (seq_key, pf, str(pid))
+
+
+def _slice_pdf_pages(src_path: str, start: int, end: int) -> str:
+    """Сохраняет диапазон страниц [start, end] из PDF в новый файл."""
+    reader = PdfReader(src_path)
+    total = len(reader.pages)
+    if total == 0:
+        return src_path
+    s = max(1, start)
+    e = min(total, end)
+    writer = PdfWriter()
+    for i in range(s - 1, e):
+        writer.add_page(reader.pages[i])
+    base = os.path.splitext(os.path.basename(src_path))[0]
+    out_dir = os.path.join("outputs", "snippets")
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, f"{base}_{s}_{e}.pdf")
+    with open(out_path, "wb") as f:
+        writer.write(f)
+    return out_path
 
 def _collect_doc_points(path: str, hard_cap: int = 5000) -> List[Dict]:
     """Читаем все точки по данному файлу (payload.path == path) через embedded-клиент."""
@@ -195,12 +216,13 @@ async def retrieve_local(
 
     lines: List[str] = ["Найдено в локальной базе:\n"]
     cites: List[Dict] = []
-    files_set = set()
+    files_seen = set()
+    files_out: List[str] = []
 
     for h in passed:
         pl = h.payload or {}
         path = pl.get("path")
-        if path and path in files_set:
+        if path and path in files_seen:
             continue
         center_id = pl.get("id") or str(h.id)
         header = _block_header(pl)
@@ -255,7 +277,14 @@ async def retrieve_local(
             "text": preview
         })
         if path:
-            files_set.add(path)
+            if pl.get("source_group") == "spravochnik" and pl.get("page_from"):
+                pf = pl.get("page_from") or 1
+                pt = pl.get("page_to") or pf
+                snippet = _slice_pdf_pages(path, pf - 2, pt + 2)
+                files_out.append(snippet)
+            else:
+                files_out.append(path)
+            files_seen.add(path)
 
     msg = "\n".join(lines).strip()
     print(f"[retrieve_local] final message: {msg}")
@@ -263,4 +292,4 @@ async def retrieve_local(
         "passed": extract_scored(passed),
         "rejected": extract_scored(rejected),
     }
-    return msg, cites, list(files_set), diag
+    return msg, cites, files_out, diag
