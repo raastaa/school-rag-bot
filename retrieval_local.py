@@ -282,6 +282,19 @@ async def retrieve_local(
                 algorithm_text = alg.strip()
             else:
                 summary_html = _escape(sr)
+    else:
+        # If the document path is missing, still attempt to summarize the preview
+        # so that local_summary and local_algorithm are not empty
+        summary_raw = await _summarize_text(best_preview)
+        if summary_raw:
+            sr = summary_raw.strip()
+            marker = "Алгоритм действий:"
+            if marker in sr:
+                before, alg = sr.split(marker, 1)
+                summary_html = _escape(before.strip())
+                algorithm_text = alg.strip()
+            else:
+                summary_html = _escape(sr)
 
     header_block = f"{header}{score_txt}"
 
