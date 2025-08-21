@@ -5,7 +5,7 @@ import asyncio
 import shutil
 import subprocess
 import tempfile
-from typing import List
+from typing import List, Dict
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -18,7 +18,10 @@ if PROJECT_ROOT not in sys.path:
 # --- aiogram ---
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, FSInputFile
+from aiogram.types import (
+    Message, ReplyKeyboardMarkup, KeyboardButton, FSInputFile,
+    InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery,
+)
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 
@@ -129,6 +132,18 @@ async def send_files(m: Message, paths: List[str], limit: int = 3):
             count += 1
         except Exception:
             await m.answer(f"Не удалось отправить файл: {p}", parse_mode="HTML")
+
+pending_files: Dict[int, List[str]] = {}
+
+
+@router.callback_query(F.data == "get_doc")
+async def cb_get_doc(c: CallbackQuery):
+    files = pending_files.get(c.from_user.id)
+    if files:
+        await send_files(c.message, files)
+    else:
+        await c.message.answer("Документ не найден.", parse_mode="HTML")
+    await c.answer()
 
 # -------------------- FSM: добавление документа (PDF) --------------------
 class AddDoc(StatesGroup):
@@ -261,12 +276,12 @@ async def handle_question(m: Message):
 
     if found_local:
         await asyncio.to_thread(mark_answered, question_id, "local")
-        await m.answer(
-            "Дополнительную информацию вы можете прочитать в файлах, прикрепленных ниже.",
-            parse_mode="HTML"
-        )
         if files:
-            await send_files(m, files, limit=3)
+            pending_files[m.from_user.id] = files
+            kb = InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="Получить документ", callback_data="get_doc")]]
+            )
+            await m.answer("Нажмите кнопку, чтобы получить документ.", reply_markup=kb, parse_mode="HTML")
         return
 
     # локально пусто: определим причину для unanswered
