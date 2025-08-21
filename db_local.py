@@ -45,6 +45,17 @@ CREATE TABLE IF NOT EXISTS answer_scores (
     FOREIGN KEY(question_id) REFERENCES questions(id)
 );
 
+CREATE TABLE IF NOT EXISTS feedback (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    question_id INTEGER NOT NULL,
+    user_id     INTEGER NOT NULL,
+    liked       INTEGER NOT NULL,
+    comment     TEXT,
+    created_at  TEXT NOT NULL,
+    FOREIGN KEY(question_id) REFERENCES questions(id),
+    FOREIGN KEY(user_id) REFERENCES users(id)
+);
+
 """
 
 def _conn():
@@ -140,6 +151,36 @@ def log_answer_score(question_id: int, payload: dict, score: float | None, accep
                 1 if accepted else 0,
                 now,
             ),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def log_feedback(question_id: int, user_id: int, liked: bool, comment: Optional[str]) -> int:
+    now = datetime.datetime.utcnow().isoformat()
+    con = _conn()
+    try:
+        cur = con.cursor()
+        cur.execute(
+            """INSERT INTO feedback
+               (question_id, user_id, liked, comment, created_at)
+               VALUES (?,?,?,?,?)""",
+            (question_id, user_id, 1 if liked else 0, comment, now),
+        )
+        fid = cur.lastrowid
+        con.commit()
+        return fid
+    finally:
+        con.close()
+
+
+def update_feedback_comment(feedback_id: int, comment: str):
+    con = _conn()
+    try:
+        con.execute(
+            "UPDATE feedback SET comment=? WHERE id=?",
+            (comment, feedback_id),
         )
         con.commit()
     finally:

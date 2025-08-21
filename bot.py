@@ -5,6 +5,8 @@ import asyncio
 import shutil
 import subprocess
 import tempfile
+import re
+import html
 from typing import List, Dict
 
 from dotenv import load_dotenv
@@ -32,7 +34,7 @@ from ingest.ingest_generic import ingest_path      # индексация пап
 from store_qdrant import get_client                # /clear_index
 from db_local import (
     init_db, upsert_user, insert_question, mark_answered,
-    log_unanswered, log_answer_score
+    log_unanswered, log_answer_score, log_feedback, update_feedback_comment
 )
 
 # Этапы 2/3 (поиск по сайту / по вебу) — должны быть в проекте
@@ -80,6 +82,18 @@ def _split_long(text: str, limit: int = 4000) -> list[str]:
     if cur:
         out.append("".join(cur).rstrip())
     return out
+
+DIGIT_EMOJI = {
+    "0": "0️⃣", "1": "1️⃣", "2": "2️⃣", "3": "3️⃣", "4": "4️⃣",
+    "5": "5️⃣", "6": "6️⃣", "7": "7️⃣", "8": "8️⃣", "9": "9️⃣",
+}
+
+def _numbers_to_emoji(text: str) -> str:
+    def repl(match: re.Match[str]) -> str:
+        num = match.group(2)
+        emoji = "".join(DIGIT_EMOJI.get(ch, ch) for ch in num)
+        return f"{match.group(1)}{emoji} "
+    return re.sub(r"(^|\n)(\d+)[\.\)]\s*", repl, text)
 
 # -------------------- отправка источников (+ DOCX→PDF) --------------------
 CONVERT_DIR = os.path.join("outputs", "converted")
@@ -134,6 +148,8 @@ async def send_files(m: Message, paths: List[str], limit: int = 3):
             await m.answer(f"Не удалось отправить файл: {p}", parse_mode="HTML")
 
 pending_files: Dict[int, List[str]] = {}
+pending_question: Dict[int, Dict] = {}
+pending_feedback: Dict[int, Dict] = {}
 
 
 @router.callback_query(F.data == "get_doc")
@@ -144,6 +160,85 @@ async def cb_get_doc(c: CallbackQuery):
     else:
         await c.message.answer("Документ не найден.", parse_mode="HTML")
     await c.answer()
+
+
+async def send_feedback_prompt(m: Message):
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="👍", callback_data="like"),
+                InlineKeyboardButton(text="👎", callback_data="dislike"),
+            ]
+        ]
+    )
+    await m.answer("Оцените ответ помощника", reply_markup=kb, parse_mode="HTML")
+
+
+@router.callback_query(F.data == "like")
+async def cb_like(c: CallbackQuery):
+    data = pending_question.pop(c.from_user.id, None)
+    if data:
+        await asyncio.to_thread(log_feedback, data["question_id"], data["user_id"], True, None)
+    await c.message.answer("Спасибо за оценку!", parse_mode="HTML")
+    await c.answer()
+
+
+@router.callback_query(F.data == "dislike")
+async def cb_dislike(c: CallbackQuery):
+    data = pending_question.pop(c.from_user.id, None)
+    if data:
+        fid = await asyncio.to_thread(log_feedback, data["question_id"], data["user_id"], False, None)
+        pending_feedback[c.from_user.id] = {
+            "feedback_id": fid,
+            "question": data.get("question"),
+            "username": data.get("username"),
+        }
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="Не буду описывать", callback_data="skip_feedback")]]
+    )
+    await c.message.answer(
+        "Опишите проблему или нажмите кнопку ниже.", reply_markup=kb, parse_mode="HTML"
+    )
+    await c.answer()
+
+
+@router.callback_query(F.data == "skip_feedback")
+async def cb_skip_feedback(c: CallbackQuery):
+    data = pending_feedback.pop(c.from_user.id, None)
+    if data:
+        await asyncio.to_thread(update_feedback_comment, data["feedback_id"], "")
+        uname = data.get("username") or f"id {c.from_user.id}"
+        msg = (
+            f"Вопрос: {data.get('question')}\n"
+            f"Пользователь: {uname}\n"
+            "Описание проблемы: не указана"
+        )
+        for admin_id in ADMIN_IDS:
+            try:
+                await bot.send_message(admin_id, msg)
+            except Exception:
+                pass
+    await c.message.answer("Спасибо за отзыв!", parse_mode="HTML")
+    await c.answer()
+
+
+@router.message(F.text, lambda m: m.from_user.id in pending_feedback)
+async def feedback_comment(m: Message):
+    data = pending_feedback.pop(m.from_user.id)
+    comment = m.text.strip()
+    await asyncio.to_thread(update_feedback_comment, data["feedback_id"], comment)
+    uname = data.get("username") or f"id {m.from_user.id}"
+    msg = (
+        f"Вопрос: {data.get('question')}\n"
+        f"Пользователь: {uname}\n"
+        f"Описание проблемы: {comment or 'не указана'}"
+    )
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(admin_id, msg)
+        except Exception:
+            pass
+    await m.answer("Спасибо за отзыв!", parse_mode="HTML")
 
 # -------------------- FSM: добавление документа (PDF) --------------------
 class AddDoc(StatesGroup):
@@ -253,12 +348,22 @@ async def handle_question(m: Message):
     user_id = await asyncio.to_thread(upsert_user, tg.id, tg.username, tg.first_name, tg.last_name)
     question_id = await asyncio.to_thread(insert_question, user_id, q)
     print(f"[handle_question] Stored question {question_id} from user {tg.id}")
+    pending_question[tg.id] = {
+        "question_id": question_id,
+        "user_id": user_id,
+        "question": q,
+        "username": tg.username,
+    }
 
     # Этап 1 — локальная база
     print("[handle_question] Step 1: локальная база")
     await m.answer("Ищу по локальной базе…", parse_mode="HTML")
-    msg_text, cites, files, diag = await retrieve_local(q, top_k=3, prefer_spravochnik=False)
-    print(f"[handle_question] local msg: {msg_text}")
+    header, summary_html, algorithm_text, cites, files, diag = await retrieve_local(
+        q, top_k=3, prefer_spravochnik=False
+    )
+    print(f"[handle_question] local header: {header}")
+    print(f"[handle_question] local summary: {summary_html}")
+    print(f"[handle_question] local algorithm: {algorithm_text}")
     print(f"[handle_question] local cites: {cites}")
     print(f"[handle_question] local files: {files}")
     print(f"[handle_question] local diag: {diag}")
@@ -270,8 +375,14 @@ async def handle_question(m: Message):
         await asyncio.to_thread(log_answer_score, question_id, payload, score, False)
 
     found_local = bool(cites)
-    for chunk in _split_long(msg_text):
+    combined = header if not summary_html else f"{header}\n{summary_html}"
+    for chunk in _split_long(combined):
         await m.answer(chunk, parse_mode="HTML")
+    if algorithm_text:
+        alg_emoji = _numbers_to_emoji(algorithm_text)
+        alg_html = html.escape(alg_emoji, quote=False)
+        for chunk in _split_long(f"Алгоритм действий:\n{alg_html}"):
+            await m.answer(chunk, parse_mode="HTML")
     print(f"[handle_question] found_local={found_local}")
 
     if found_local:
@@ -282,6 +393,7 @@ async def handle_question(m: Message):
                 inline_keyboard=[[InlineKeyboardButton(text="Получить документ", callback_data="get_doc")]]
             )
             await m.answer("Нажмите кнопку, чтобы получить документ.", reply_markup=kb, parse_mode="HTML")
+        await send_feedback_prompt(m)
         return
 
     # локально пусто: определим причину для unanswered
@@ -304,6 +416,7 @@ async def handle_question(m: Message):
 
     if site_results:
         await asyncio.to_thread(mark_answered, question_id, "site")
+        await send_feedback_prompt(m)
         return  # есть выдача на этапе 2 → веб не запускаем
 
     # Этап 3 — интернет (только если 1 и 2 пусто)
@@ -320,6 +433,7 @@ async def handle_question(m: Message):
     if web_results:
         await asyncio.to_thread(mark_answered, question_id, "web")
         print("[handle_question] Answered via web search")
+        await send_feedback_prompt(m)
 
 # -------------------- запуск --------------------
 async def main():

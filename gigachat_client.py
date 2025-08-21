@@ -98,7 +98,7 @@ async def chat(prompt: str) -> str:
         return ""
     cli = _new_client()
     try:
-        resp = await cli.achat(prompt)
+        resp = await cli.achat(prompt, model="GigaChat-Pro")
         choices = getattr(resp, "choices", None) or []
         if not choices:
             return ""
