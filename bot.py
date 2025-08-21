@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 from typing import List, Dict
+import re
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -52,6 +53,39 @@ bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 router = Router()
 dp.include_router(router)
+
+# -------------------- форматирование ответа --------------------
+_DIGITS = {
+    "0": "0️⃣",
+    "1": "1️⃣",
+    "2": "2️⃣",
+    "3": "3️⃣",
+    "4": "4️⃣",
+    "5": "5️⃣",
+    "6": "6️⃣",
+    "7": "7️⃣",
+    "8": "8️⃣",
+    "9": "9️⃣",
+}
+
+def format_text(text: str) -> str:
+    """Заменяет *звёздочки* на <b> и цифры в начале строк на смайлики."""
+    if not text:
+        return ""
+    # *text* → <b>text</b>
+    text = re.sub(r"\*(.+?)\*", r"<b>\1</b>", text)
+
+    def _emojify_line(line: str) -> str:
+        if re.match(r"^\d+[\.)]", line.strip()):
+            return "".join(_DIGITS.get(ch, ch) for ch in line)
+        return line
+
+    lines = text.splitlines()
+    lines = [_emojify_line(ln) for ln in lines]
+    return "\n".join(lines)
+
+# хранение последнего вопроса пользователя для обратной связи
+user_questions: Dict[int, str] = {}
 
 # -------------------- вспомогалки UI/админ --------------------
 def is_admin(user_id: int) -> bool:
@@ -135,6 +169,16 @@ async def send_files(m: Message, paths: List[str], limit: int = 3):
 
 pending_files: Dict[int, List[str]] = {}
 
+# клавиатура оценки ответа
+rate_kb = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [
+            InlineKeyboardButton(text="Плюс", callback_data="rate_plus"),
+            InlineKeyboardButton(text="Минус", callback_data="rate_minus"),
+        ]
+    ]
+)
+
 
 @router.callback_query(F.data == "get_doc")
 async def cb_get_doc(c: CallbackQuery):
@@ -149,6 +193,10 @@ async def cb_get_doc(c: CallbackQuery):
 class AddDoc(StatesGroup):
     waiting_title = State()
     waiting_file = State()
+
+
+class Feedback(StatesGroup):
+    waiting_text = State()
 
 @router.message(F.text == "➕ Добавить документ")
 async def add_doc(m: Message, state: FSMContext):
@@ -198,6 +246,46 @@ async def got_file(m: Message, state: FSMContext):
 async def not_file(m: Message):
     await m.answer("Пришлите, пожалуйста, PDF-файл документом.", parse_mode="HTML")
 
+
+# -------------------- обратная связь --------------------
+async def send_rating(m: Message):
+    await m.answer("Оцените ответ помощника", reply_markup=rate_kb, parse_mode="HTML")
+
+
+@router.callback_query(F.data == "rate_plus")
+async def rate_plus(c: CallbackQuery):
+    await c.message.edit_reply_markup()
+    await c.message.answer("Благодарим вас за ответ", parse_mode="HTML")
+    await c.answer()
+
+
+@router.callback_query(F.data == "rate_minus")
+async def rate_minus(c: CallbackQuery, state: FSMContext):
+    await c.message.edit_reply_markup()
+    await c.message.answer("Благодарим вас за ответ", parse_mode="HTML")
+    await c.message.answer("Опишите пожалуйста свою проблему", parse_mode="HTML")
+    await state.set_state(Feedback.waiting_text)
+    await c.answer()
+
+
+@router.message(Feedback.waiting_text, F.text)
+async def feedback_text(m: Message, state: FSMContext):
+    problem = m.text.strip()
+    question = user_questions.get(m.from_user.id, "")
+    user = m.from_user
+    info = (
+        "Негативная оценка\n"
+        f"Ник: @{user.username or 'не указан'}\n"
+        f"Телефон: не указан\n"
+        f"ID: {user.id}\n"
+        f"Вопрос: {question}\n"
+        f"Проблема: {problem}"
+    )
+    for admin_id in ADMIN_IDS:
+        await bot.send_message(admin_id, info, parse_mode="HTML")
+    await m.answer("Благодарим вас за ответ", parse_mode="HTML")
+    await state.clear()
+
 # -------------------- команды админа --------------------
 @router.message(CommandStart())
 async def cmd_start(m: Message):
@@ -243,8 +331,9 @@ async def cmd_ingest_teach(m: Message):
 
 # -------------------- обработка вопроса пользователя --------------------
 @router.message(F.text & ~F.text.in_({"➕ Добавить документ"}))
-async def handle_question(m: Message):
+async def handle_question(m: Message, state: FSMContext):
     q = m.text.strip()
+    user_questions[m.from_user.id] = q
     print(f"[handle_question] Received question: {q}")
 
     # 0) БД: логируем пользователя и вопрос
@@ -270,6 +359,7 @@ async def handle_question(m: Message):
         await asyncio.to_thread(log_answer_score, question_id, payload, score, False)
 
     found_local = bool(cites)
+    msg_text = format_text(msg_text)
     for chunk in _split_long(msg_text):
         await m.answer(chunk, parse_mode="HTML")
     print(f"[handle_question] found_local={found_local}")
@@ -282,6 +372,7 @@ async def handle_question(m: Message):
                 inline_keyboard=[[InlineKeyboardButton(text="Получить документ", callback_data="get_doc")]]
             )
             await m.answer("Нажмите кнопку, чтобы получить документ.", reply_markup=kb, parse_mode="HTML")
+        await send_rating(m)
         return
 
     # локально пусто: определим причину для unanswered
@@ -298,12 +389,14 @@ async def handle_question(m: Message):
         site_text, site_results = await retrieve_site_live(q, max_results=5)
     except Exception as e:
         site_text, site_results = (f"Ошибка поиска на сайте: {e}", [])
+    site_text = format_text(site_text)
     for chunk in _split_long(site_text):
         await m.answer(chunk, parse_mode="HTML")
     print(f"[handle_question] site_results: {site_results}")
 
     if site_results:
         await asyncio.to_thread(mark_answered, question_id, "site")
+        await send_rating(m)
         return  # есть выдача на этапе 2 → веб не запускаем
 
     # Этап 3 — интернет (только если 1 и 2 пусто)
@@ -313,6 +406,7 @@ async def handle_question(m: Message):
         web_text, web_results = await retrieve_web_live(q, max_results=5)
     except Exception as e:
         web_text, web_results = (f"Ошибка веб-поиска: {e}", [])
+    web_text = format_text(web_text)
     for chunk in _split_long(web_text):
         await m.answer(chunk, parse_mode="HTML")
     print(f"[handle_question] web_results: {web_results}")
@@ -320,6 +414,7 @@ async def handle_question(m: Message):
     if web_results:
         await asyncio.to_thread(mark_answered, question_id, "web")
         print("[handle_question] Answered via web search")
+    await send_rating(m)
 
 # -------------------- запуск --------------------
 async def main():
