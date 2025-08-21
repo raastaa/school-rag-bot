@@ -42,6 +42,7 @@ def _new_client() -> GigaChat:
     kwargs: dict[str, Any] = {
         "credentials": CREDENTIALS,
         "scope": SCOPE,
+    
         "verify_ssl_certs": VERIFY_SSL_CERTS,
     }
     if BASE_URL:
@@ -98,7 +99,7 @@ async def chat(prompt: str) -> str:
         return ""
     cli = _new_client()
     try:
-        resp = await cli.achat(prompt, model="GigaChat-Pro")
+        resp = await cli.achat(prompt, model="GigaChat-2-Pro")
         choices = getattr(resp, "choices", None) or []
         if not choices:
             return ""
