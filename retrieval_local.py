@@ -7,6 +7,7 @@ import html
 from gigachat_client import GigaChatEmbedder, chat
 from store_qdrant import search as qsearch, get_client
 from qdrant_client.models import Filter, FieldCondition, MatchValue
+from pypdf import PdfReader, PdfWriter
 
 # Параметры
 MAX_ITEMS      = 3
@@ -23,7 +24,6 @@ def _escape(t: str) -> str:
 def _block_header(pl: Dict) -> str:
     src   = _escape(pl.get("source") or "Источник")
     p_from = pl.get("page_from")
-    group = _escape(pl.get("source_group") or "local")
     head = f"Информация найдена в файле <b>{src}</b>"
     if p_from:
         head += f" (стр. {p_from})"
@@ -44,6 +44,26 @@ def _sort_key(pl: Dict) -> tuple:
     pid = pl.get("id") or ""
     seq_key = seq if isinstance(seq, int) else -1
     return (seq_key, pf, str(pid))
+
+
+def _slice_pdf_pages(src_path: str, start: int, end: int) -> str:
+    """Сохраняет диапазон страниц [start, end] из PDF в новый файл."""
+    reader = PdfReader(src_path)
+    total = len(reader.pages)
+    if total == 0:
+        return src_path
+    s = max(1, start)
+    e = min(total, end)
+    writer = PdfWriter()
+    for i in range(s - 1, e):
+        writer.add_page(reader.pages[i])
+    base = os.path.splitext(os.path.basename(src_path))[0]
+    out_dir = os.path.join("outputs", "snippets")
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, f"{base}_{s}_{e}.pdf")
+    with open(out_path, "wb") as f:
+        writer.write(f)
+    return out_path
 
 def _collect_doc_points(path: str, hard_cap: int = 5000) -> List[Dict]:
     """Читаем все точки по данному файлу (payload.path == path) через embedded-клиент."""
@@ -85,35 +105,6 @@ def _neighbors_preview(all_payloads: List[Dict], center_id: str) -> str:
     hi = min(len(all_sorted), idx + NEIGH_AFTER + 1)
     parts = [pl.get("text") or "" for pl in all_sorted[lo:hi]]
     return _concat_limit(parts, SNIPPET_LIMIT)
-
-def _expand_paragraph(all_payloads: List[Dict], center_id: str) -> str:
-    """Берём центр и расширяем до границ абзаца или главы.
-
-    На практике используем простое эвристическое правило: границей
-    считаем перевод строки. Если искомый чанк не найден, возвращаем его
-    собственный текст.
-    """
-    if not all_payloads:
-        return ""
-    ordered = sorted(all_payloads, key=_sort_key)
-    texts = [pl.get("text") or "" for pl in ordered]
-    idx = next((i for i, pl in enumerate(ordered) if pl.get("id") == center_id), None)
-    if idx is None:
-        return ordered[0].get("text") or ""
-    # соберём полный текст и позиции начала каждого чанка
-    offsets: List[int] = []
-    cur = 0
-    for t in texts:
-        offsets.append(cur)
-        cur += len(t) + 1  # учтём перевод строки между чанками
-    full = "\n".join(texts)
-    start_pos = offsets[idx]
-    end_pos = start_pos + len(texts[idx])
-    para_start = full.rfind("\n", 0, start_pos)
-    para_start = 0 if para_start == -1 else para_start + 1
-    para_end = full.find("\n", end_pos)
-    para_end = len(full) if para_end == -1 else para_end
-    return full[para_start:para_end].strip()
 
 async def _summarize_text(text: str) -> str:
     """Получаем краткое резюме и алгоритм действий через GigaChat."""
@@ -193,32 +184,47 @@ async def retrieve_local(
             "passed": [], "rejected": extract_scored(rejected)
         }
 
-    lines: List[str] = ["Найдено в локальной базе:\n"]
+    lines: List[str] = []
     cites: List[Dict] = []
-    files_set = set()
+    files_seen = set()
+    files_out: List[str] = []
 
     for h in passed:
         pl = h.payload or {}
         path = pl.get("path")
-        if path and path in files_set:
+        if path and path in files_seen:
             continue
         center_id = pl.get("id") or str(h.id)
         header = _block_header(pl)
         score = getattr(h, "score", None)
-        score_txt = f" (коэфф. {score:.3f})" if score is not None else ""
+        score_txt = ""
+        if score is not None:
+            score_pct = int(round(score * 100))
+            score_txt = f" — коэфф. совпадения {score_pct}%"
+
         doc_payloads = _collect_doc_points(path) if path else []
         preview = _neighbors_preview(doc_payloads, center_id)
-        block = f"• {header}{score_txt}\n{preview}" if preview else f"• {header}{score_txt}"
 
         summary = ""
         if path:
             print(f"[retrieve_local] summarizing for file: {path}")
             summary_text = ""
-            if pl.get("source_group") == "spravochnik":
-                summary_text = _expand_paragraph(doc_payloads, center_id)
+            if pl.get("source_group") == "spravochnik" and pl.get("page_from"):
+                pf = pl.get("page_from") or 1
+                pt = pl.get("page_to") or pf
+                start_p = pf - 2
+                end_p = pt + 2
+                snippet_chunks: List[str] = []
+                for pld in doc_payloads:
+                    p_page = pld.get("page_from") or 0
+                    if start_p <= p_page <= end_p:
+                        snippet_chunks.append(pld.get("text") or "")
+                summary_text = "\n".join(snippet_chunks)
             else:
                 ordered = sorted(doc_payloads, key=_sort_key)
                 summary_text = "\n".join(p.get("text") or "" for p in ordered)
+            print("[retrieve_local] text sent to GigaChat:")
+            print(summary_text)
             summary_raw = await _summarize_text(summary_text)
             if summary_raw:
                 sr = summary_raw.strip()
@@ -245,9 +251,10 @@ async def retrieve_local(
                     summary = f"{prefix}<b>{alg_html}</b>"
                 else:
                     summary = _escape(sr)
+        block = f"{header}{score_txt}"
         if summary:
-            block += f"\n{summary}"
-        lines.append(block + "\n")
+            block += f"\nКраткое описание:\n{summary}"
+        lines.append(block)
         cites.append({
             "source": pl.get("source"),
             "page_from": pl.get("page_from"),
@@ -255,12 +262,19 @@ async def retrieve_local(
             "text": preview
         })
         if path:
-            files_set.add(path)
+            if pl.get("source_group") == "spravochnik" and pl.get("page_from"):
+                pf = pl.get("page_from") or 1
+                pt = pl.get("page_to") or pf
+                snippet = _slice_pdf_pages(path, pf - 2, pt + 2)
+                files_out.append(snippet)
+            else:
+                files_out.append(path)
+            files_seen.add(path)
 
-    msg = "\n".join(lines).strip()
+    msg = "\n\n".join(lines).strip()
     print(f"[retrieve_local] final message: {msg}")
     diag = {
         "passed": extract_scored(passed),
         "rejected": extract_scored(rejected),
     }
-    return msg, cites, list(files_set), diag
+    return msg, cites, files_out, diag
