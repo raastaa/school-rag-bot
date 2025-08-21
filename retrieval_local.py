@@ -162,10 +162,12 @@ async def retrieve_local(
     question: str,
     top_k: int = MAX_ITEMS,
     prefer_spravochnik: bool = True
-) -> Tuple[str, List[Dict], List[str], Dict[str, list]]:
+) -> Tuple[str, str, str, List[Dict], List[str], Dict[str, list]]:
     """
     Возвращает:
-      msg_text (HTML), cites (для ссылок/метаданных), files (пути к файлам), diag({'passed','rejected','gigachat'}).
+      header (HTML), summary_html, algorithm_text,
+      cites (для ссылок/метаданных), files (пути к файлам),
+      diag({'passed','rejected','gigachat'}).
     """
     print(f"[retrieve_local] question: {question}")
     emb = GigaChatEmbedder()
@@ -188,7 +190,7 @@ async def retrieve_local(
     print(f"[retrieve_local] hits retrieved: {len(hits)}")
 
     if not hits:
-        return "Ничего релевантного не найдено в локальном справочнике.", [], [], {"passed": [], "rejected": []}
+        return "Ничего релевантного не найдено в локальном справочнике.", "", "", [], [], {"passed": [], "rejected": []}
 
     # обрежем по количеству и применим порог
     hits = hits[:top_k]
@@ -203,7 +205,7 @@ async def retrieve_local(
 
     if not passed:
         # совсем пусто после порога
-        return "Ничего релевантного не найдено в локальном справочнике.", [], [], {
+        return "Ничего релевантного не найдено в локальном справочнике.", "", "", [], [], {
             "passed": [], "rejected": extract_scored(rejected)
         }
 
@@ -221,7 +223,7 @@ async def retrieve_local(
         scored.append((h, gc_score, preview, doc_payloads))
 
     if not scored:
-        return "Ничего релевантного не найдено в локальном справочнике.", [], [], {
+        return "Ничего релевантного не найдено в локальном справочнике.", "", "", [], [], {
             "passed": extract_scored(passed),
             "rejected": extract_scored(rejected),
         }
@@ -238,7 +240,8 @@ async def retrieve_local(
         score_pct = int(round(score * 100))
         score_txt = f" — коэфф. совпадения {score_pct}%"
 
-    summary = ""
+    summary_html = ""
+    algorithm_text = ""
     if path:
         print(f"[retrieve_local] summarizing for file: {path}")
         if pl.get("page_from"):
@@ -275,17 +278,12 @@ async def retrieve_local(
             marker = "Алгоритм действий:"
             if marker in sr:
                 before, alg = sr.split(marker, 1)
-                before_html = _escape(before.strip())
-                alg_html = _escape(marker + "\n" + alg.strip())
-                prefix = f"{before_html}\n" if before_html else ""
-                summary = f"{prefix}<b>{alg_html}</b>"
+                summary_html = _escape(before.strip())
+                algorithm_text = alg.strip()
             else:
-                summary = _escape(sr)
+                summary_html = _escape(sr)
 
-    block = f"{header}{score_txt}"
-    if summary:
-        block += f"\nКраткое описание:\n{summary}"
-    msg = block.strip()
+    header_block = f"{header}{score_txt}"
 
     cites = [{
         "source": pl.get("source"),
@@ -309,4 +307,4 @@ async def retrieve_local(
         "rejected": extract_scored(rejected),
         "gigachat": [(getattr(h, "payload", None) or {}, sc) for h, sc, _, _ in scored],
     }
-    return msg, cites, files_out, diag
+    return header_block.strip(), summary_html, algorithm_text, cites, files_out, diag
