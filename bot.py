@@ -176,6 +176,10 @@ async def send_feedback_prompt(m: Message):
 
 @router.callback_query(F.data == "like")
 async def cb_like(c: CallbackQuery):
+    try:
+        await c.message.edit_reply_markup()
+    except Exception:
+        pass
     data = pending_question.pop(c.from_user.id, None)
     if data:
         await asyncio.to_thread(log_feedback, data["question_id"], data["user_id"], True, None)
@@ -185,6 +189,10 @@ async def cb_like(c: CallbackQuery):
 
 @router.callback_query(F.data == "dislike")
 async def cb_dislike(c: CallbackQuery):
+    try:
+        await c.message.edit_reply_markup()
+    except Exception:
+        pass
     data = pending_question.pop(c.from_user.id, None)
     if data:
         fid = await asyncio.to_thread(log_feedback, data["question_id"], data["user_id"], False, None)
@@ -196,14 +204,22 @@ async def cb_dislike(c: CallbackQuery):
     kb = InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text="Не буду описывать", callback_data="skip_feedback")]]
     )
-    await c.message.answer(
+    prompt = await c.message.answer(
         "Опишите проблему или нажмите кнопку ниже.", reply_markup=kb, parse_mode="HTML"
     )
+    info = pending_feedback.get(c.from_user.id)
+    if info is not None:
+        info["prompt_msg_id"] = prompt.message_id
+        info["chat_id"] = prompt.chat.id
     await c.answer()
 
 
 @router.callback_query(F.data == "skip_feedback")
 async def cb_skip_feedback(c: CallbackQuery):
+    try:
+        await c.message.edit_reply_markup()
+    except Exception:
+        pass
     data = pending_feedback.pop(c.from_user.id, None)
     if data:
         await asyncio.to_thread(update_feedback_comment, data["feedback_id"], "")
@@ -226,6 +242,10 @@ async def cb_skip_feedback(c: CallbackQuery):
 async def feedback_comment(m: Message):
     data = pending_feedback.pop(m.from_user.id)
     comment = m.text.strip()
+    try:
+        await bot.edit_message_reply_markup(data["chat_id"], data["prompt_msg_id"], reply_markup=None)
+    except Exception:
+        pass
     await asyncio.to_thread(update_feedback_comment, data["feedback_id"], comment)
     uname = data.get("username") or f"id {m.from_user.id}"
     msg = (
