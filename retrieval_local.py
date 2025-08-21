@@ -128,7 +128,14 @@ async def _summarize_text(text: str) -> str:
         "Ответ сформируй строго без каких-либо вступлений:\n"
         "<абзацы выжимки без заголовка>\n\nАлгоритм действий:\n1. ..."
     )
-    return await chat(prompt)
+    print("[_summarize_text] Source text:")
+    print(cut)
+    print("[_summarize_text] Prompt sent to GigaChat:")
+    print(prompt)
+    result = await chat(prompt)
+    print("[_summarize_text] Response:")
+    print(result)
+    return result
 
 def extract_scored(hits: list) -> list[tuple[dict, float | None]]:
     """Удобно вытащить (payload, score) для логирования."""
@@ -146,19 +153,25 @@ async def retrieve_local(
     Возвращает:
       msg_text (HTML), cites (для ссылок/метаданных), files (пути к файлам), diag({'passed','rejected'}).
     """
+    print(f"[retrieve_local] question: {question}")
     emb = GigaChatEmbedder()
+    print("[retrieve_local] embedding question")
     qvec = (await emb.embed([question]))[0]
+    print(f"[retrieve_local] embedding vector size: {len(qvec)}")
 
     if not prefer_spravochnik:
+        print("[retrieve_local] searching without spravochnik filter")
         hits = qsearch(qvec, top_k=top_k)
     else:
         k1 = max(2, top_k // 2)
         k2 = top_k - k1
+        print(f"[retrieve_local] searching with spravochnik preference k1={k1}, k2={k2}")
         h1 = qsearch(qvec, top_k=k1, source_filter="spravochnik")
         h2 = qsearch(qvec, top_k=top_k)
         seen = set(p.payload.get("id") for p in h1 if p.payload)
         h2 = [p for p in h2 if p.payload and p.payload.get("id") not in seen]
         hits = h1 + h2[:k2]
+    print(f"[retrieve_local] hits retrieved: {len(hits)}")
 
     if not hits:
         return "Ничего релевантного не найдено в локальном справочнике.", [], [], {"passed": [], "rejected": []}
@@ -172,6 +185,7 @@ async def retrieve_local(
             passed.append(h)
         else:
             rejected.append(h)
+    print(f"[retrieve_local] passed={len(passed)}, rejected={len(rejected)}")
 
     if not passed:
         # совсем пусто после порога
@@ -198,6 +212,7 @@ async def retrieve_local(
 
         summary = ""
         if path:
+            print(f"[retrieve_local] summarizing for file: {path}")
             summary_text = ""
             if pl.get("source_group") == "spravochnik":
                 summary_text = _expand_paragraph(doc_payloads, center_id)
@@ -243,6 +258,7 @@ async def retrieve_local(
             files_set.add(path)
 
     msg = "\n".join(lines).strip()
+    print(f"[retrieve_local] final message: {msg}")
     diag = {
         "passed": extract_scored(passed),
         "rejected": extract_scored(rejected),

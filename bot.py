@@ -230,16 +230,23 @@ async def cmd_ingest_teach(m: Message):
 @router.message(F.text & ~F.text.in_({"➕ Добавить документ"}))
 async def handle_question(m: Message):
     q = m.text.strip()
+    print(f"[handle_question] Received question: {q}")
 
     # 0) БД: логируем пользователя и вопрос
     from db_local import DB_PATH  # только ради удобной отладки
     tg = m.from_user
     user_id = await asyncio.to_thread(upsert_user, tg.id, tg.username, tg.first_name, tg.last_name)
     question_id = await asyncio.to_thread(insert_question, user_id, q)
+    print(f"[handle_question] Stored question {question_id} from user {tg.id}")
 
     # Этап 1 — локальная база
+    print("[handle_question] Step 1: локальная база")
     await m.answer("Ищу по локальной базе…", parse_mode="HTML")
     msg_text, cites, files, diag = await retrieve_local(q, top_k=3, prefer_spravochnik=False)
+    print(f"[handle_question] local msg: {msg_text}")
+    print(f"[handle_question] local cites: {cites}")
+    print(f"[handle_question] local files: {files}")
+    print(f"[handle_question] local diag: {diag}")
 
     # Логируем все оценки (принятые и отфильтрованные)
     for payload, score in (diag.get("passed") or []):
@@ -250,6 +257,7 @@ async def handle_question(m: Message):
     found_local = bool(cites)
     for chunk in _split_long(msg_text):
         await m.answer(chunk, parse_mode="HTML")
+    print(f"[handle_question] found_local={found_local}")
 
     if found_local:
         await asyncio.to_thread(mark_answered, question_id, "local")
@@ -265,9 +273,11 @@ async def handle_question(m: Message):
     reason = "no_local_hits"
     if (diag.get("rejected") and not diag.get("passed")):
         reason = "below_threshold"
+    print("[handle_question] no local results, logging unanswered reason")
     await asyncio.to_thread(log_unanswered, question_id, reason)
 
     # Этап 2 — сайт smp.edu.ru
+    print("[handle_question] Step 2: поиск на сайте smp.edu.ru")
     await m.answer("Ищу на сайте smp.edu.ru…", parse_mode="HTML")
     try:
         site_text, site_results = await retrieve_site_live(q, max_results=5)
@@ -275,12 +285,14 @@ async def handle_question(m: Message):
         site_text, site_results = (f"Ошибка поиска на сайте: {e}", [])
     for chunk in _split_long(site_text):
         await m.answer(chunk, parse_mode="HTML")
+    print(f"[handle_question] site_results: {site_results}")
 
     if site_results:
         await asyncio.to_thread(mark_answered, question_id, "site")
         return  # есть выдача на этапе 2 → веб не запускаем
 
     # Этап 3 — интернет (только если 1 и 2 пусто)
+    print("[handle_question] Step 3: поиск в интернете")
     await m.answer("Ищу в интернете…", parse_mode="HTML")
     try:
         web_text, web_results = await retrieve_web_live(q, max_results=5)
@@ -288,9 +300,11 @@ async def handle_question(m: Message):
         web_text, web_results = (f"Ошибка веб-поиска: {e}", [])
     for chunk in _split_long(web_text):
         await m.answer(chunk, parse_mode="HTML")
+    print(f"[handle_question] web_results: {web_results}")
 
     if web_results:
         await asyncio.to_thread(mark_answered, question_id, "web")
+        print("[handle_question] Answered via web search")
 
 # -------------------- запуск --------------------
 async def main():
