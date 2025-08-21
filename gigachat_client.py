@@ -42,7 +42,7 @@ def _new_client() -> GigaChat:
     kwargs: dict[str, Any] = {
         "credentials": CREDENTIALS,
         "scope": SCOPE,
-    
+        "model":"GigaChat-2-Pro",
         "verify_ssl_certs": VERIFY_SSL_CERTS,
     }
     if BASE_URL:
@@ -95,11 +95,13 @@ async def chat(prompt: str) -> str:
 
     Возвращает текст первого сообщения или пустую строку при ошибке.
     """
+    print("HERE")
     if not CREDENTIALS:
         return ""
     cli = _new_client()
     try:
-        resp = await cli.achat(prompt, model="GigaChat-2-Pro")
+        resp = await cli.achat(prompt)
+        print("resp",resp)
         choices = getattr(resp, "choices", None) or []
         if not choices:
             return ""
