@@ -202,11 +202,20 @@ rate_kb = InlineKeyboardMarkup(
     ]
 )
 
-HELP_TEXT = (
+USER_HELP_TEXT = (
     "Я могу отвечать на вопросы, ищя информацию в локальной базе, на сайте и в интернете.\n"
     "Основные команды:\n"
     "/start — начать работу\n"
     "/help — показать эту справку"
+)
+
+ADMIN_HELP_TEXT = USER_HELP_TEXT + (
+    "\nКоманды администратора:\n"
+    "/clear_index — очистить локальный индекс Qdrant\n"
+    "/ingest_teach — проиндексировать teach/ (source_group=teach)\n"
+    "/unanswered N — показать вопросы без ответа\n"
+    "/feedback N — показать отзывы пользователей\n"
+    "кнопка «➕ Добавить документ» — загрузить новый PDF"
 )
 
 
@@ -335,12 +344,14 @@ async def feedback_text(m: Message, state: FSMContext):
 
 @router.message(Command("help"))
 async def cmd_help(m: Message):
-    await m.answer(HELP_TEXT, parse_mode="HTML")
+    text = ADMIN_HELP_TEXT if is_admin(m.from_user.id) else USER_HELP_TEXT
+    await m.answer(text, parse_mode="HTML")
 
 
 @router.message(F.text == "ℹ️ Помощь")
 async def help_button(m: Message):
-    await m.answer(HELP_TEXT, parse_mode="HTML")
+    text = ADMIN_HELP_TEXT if is_admin(m.from_user.id) else USER_HELP_TEXT
+    await m.answer(text, parse_mode="HTML")
 
 # -------------------- команды админа --------------------
 @router.message(CommandStart())
@@ -423,7 +434,17 @@ async def cmd_feedback(m: Message):
     lines = []
     for r in rows:
         sign = "+" if (r["rating"] or 0) > 0 else "-"
-        lines.append(f"{r['created_at']}: {sign} {r['question'] or ''} {r['comment'] or ''}")
+        user = r.get("username")
+        if user:
+            user_repr = f"@{user}"
+        else:
+            names = " ".join(
+                [p for p in [r.get("first_name"), r.get("last_name")] if p]
+            ).strip()
+            user_repr = names or str(r.get("tg_id"))
+        lines.append(
+            f"{r['created_at']}: {sign} {user_repr} {r['question'] or ''} {r['comment'] or ''}"
+        )
     text = "\n".join(lines)
     for chunk in _split_long(text):
         await m.answer(chunk, parse_mode="HTML")
