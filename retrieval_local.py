@@ -1,9 +1,11 @@
 # retrieval_local.py
 from __future__ import annotations
 from typing import List, Dict, Tuple
-import os
 import html
 import re
+import logging
+
+from config import settings
 
 from gigachat_client import GigaChatEmbedder, chat
 from store_qdrant import search as qsearch, get_client
@@ -11,12 +13,14 @@ from qdrant_client.models import Filter, FieldCondition, MatchValue
 from pypdf import PdfReader, PdfWriter
 
 # Параметры
+logger = logging.getLogger(__name__)
+
 MAX_ITEMS      = 3
 SNIPPET_LIMIT  = 800
 NEIGH_BEFORE   = 0          # только центр
 NEIGH_AFTER    = 1          # и ОДИН чанк после
-THRESHOLD      = float(os.getenv("RELEVANCE_THRESHOLD", "0.82"))  # порог релевантности (>=)
-QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "school_docs")
+THRESHOLD      = settings.RELEVANCE_THRESHOLD  # порог релевантности (>=)
+QDRANT_COLLECTION = settings.QDRANT_COLLECTION
 
 def _escape(t: str) -> str:
     # экранируем для parse_mode="HTML"
@@ -120,13 +124,10 @@ async def _summarize_text(text: str) -> str:
         "Ответ сформируй строго без каких-либо вступлений:\n"
         "<абзацы выжимки без заголовка>\n\nАлгоритм действий:\n1. ..."
     )
-    print("[_summarize_text] Source text:")
-    print(cut)
-    print("[_summarize_text] Prompt sent to GigaChat:")
-    print(prompt)
+    logger.debug("[_summarize_text] Source text:\n%s", cut)
+    logger.debug("[_summarize_text] Prompt sent to GigaChat:\n%s", prompt)
     result = await chat(prompt)
-    print("[_summarize_text] Response:")
-    print(result)
+    logger.debug("[_summarize_text] Response:\n%s", result)
     return result
 
 
@@ -167,25 +168,25 @@ async def retrieve_local(
     Возвращает:
       msg_text (HTML), cites (для ссылок/метаданных), files (пути к файлам), diag({'passed','rejected','gigachat'}).
     """
-    print(f"[retrieve_local] question: {question}")
+    logger.debug("question: %s", question)
     emb = GigaChatEmbedder()
-    print("[retrieve_local] embedding question")
+    logger.debug("embedding question")
     qvec = (await emb.embed([question]))[0]
-    print(f"[retrieve_local] embedding vector size: {len(qvec)}")
+    logger.debug("embedding vector size: %s", len(qvec))
 
     if not prefer_spravochnik:
-        print("[retrieve_local] searching without spravochnik filter")
+        logger.debug("searching without spravochnik filter")
         hits = qsearch(qvec, top_k=top_k)
     else:
         k1 = max(2, top_k // 2)
         k2 = top_k - k1
-        print(f"[retrieve_local] searching with spravochnik preference k1={k1}, k2={k2}")
+        logger.debug("searching with spravochnik preference k1=%s k2=%s", k1, k2)
         h1 = qsearch(qvec, top_k=k1, source_filter="spravochnik")
         h2 = qsearch(qvec, top_k=top_k)
         seen = set(p.payload.get("id") for p in h1 if p.payload)
         h2 = [p for p in h2 if p.payload and p.payload.get("id") not in seen]
         hits = h1 + h2[:k2]
-    print(f"[retrieve_local] hits retrieved: {len(hits)}")
+    logger.debug("hits retrieved: %s", len(hits))
 
     if not hits:
         return "Ничего релевантного не найдено в локальном справочнике.", [], [], {"passed": [], "rejected": []}
@@ -199,7 +200,7 @@ async def retrieve_local(
             passed.append(h)
         else:
             rejected.append(h)
-    print(f"[retrieve_local] passed={len(passed)}, rejected={len(rejected)}")
+    logger.debug("passed=%s, rejected=%s", len(passed), len(rejected))
 
     if not passed:
         # совсем пусто после порога
@@ -240,7 +241,7 @@ async def retrieve_local(
 
     summary = ""
     if path:
-        print(f"[retrieve_local] summarizing for file: {path}")
+        logger.debug("summarizing for file: %s", path)
         if pl.get("page_from"):
             pf = pl.get("page_from") or 1
             pt = pl.get("page_to") or pf

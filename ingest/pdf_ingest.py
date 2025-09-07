@@ -35,6 +35,8 @@ from text_utils import (
     EMB_MAX,
 )
 
+from config import settings
+
 from gigachat_client import GigaChatEmbedder, detect_dim
 from store_qdrant import ensure_collection, upsert_chunks
 
@@ -50,7 +52,7 @@ except Exception:  # на случай другой версии SDK
 load_dotenv()
 
 # Сколько строк отправляем в одном запросе к /embeddings
-BATCH = int(os.getenv("EMBEDDING_BATCH", "64"))
+BATCH = settings.EMBEDDING_BATCH
 
 
 # ----------------------------- helpers ----------------------------- #

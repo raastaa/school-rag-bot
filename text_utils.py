@@ -1,11 +1,12 @@
 from typing import List, Tuple
 import re
 import tiktoken
-import os
 
-EMB_MAX = int(os.getenv("EMBEDDING_MAX_TOKENS", "514"))
-EMB_TARGET = int(os.getenv("EMBEDDING_TARGET_TOKENS", "480"))
-EMB_OVERLAP = int(os.getenv("EMBEDDING_OVERLAP_TOKENS", "60"))
+from config import settings
+
+EMB_MAX = settings.EMBEDDING_MAX_TOKENS
+EMB_TARGET = settings.EMBEDDING_TARGET_TOKENS
+EMB_OVERLAP = settings.EMBEDDING_OVERLAP_TOKENS
 
 _enc = tiktoken.get_encoding("cl100k_base")
 _HYPHENS = r"[\-\u2010\u2011\u2012\u2013\u2014\u2212]" 

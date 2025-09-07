@@ -13,27 +13,23 @@
   GIGACHAT_CA_BUNDLE=/path/to/chain.pem  (опционально)
 """
 
-import os
 import asyncio
 from typing import List, Sequence, Any, Optional
-from dotenv import load_dotenv
+import logging
+
+from config import settings
 
 # официальный SDK
 from gigachat import GigaChat
 
-load_dotenv()
+logger = logging.getLogger(__name__)
 
-CREDENTIALS = os.getenv("GIGACHAT_CREDENTIALS", "")
-SCOPE = os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS")
-EMBEDDINGS_MODEL = os.getenv("GIGACHAT_EMBEDDINGS_MODEL", "Embeddings")
-BASE_URL = os.getenv("GIGACHAT_BASE_URL", "").rstrip("/") or None
+CREDENTIALS = settings.GIGACHAT_CREDENTIALS
+SCOPE = settings.GIGACHAT_SCOPE
+EMBEDDINGS_MODEL = settings.GIGACHAT_EMBEDDINGS_MODEL
+BASE_URL = settings.GIGACHAT_BASE_URL.rstrip("/") or None if settings.GIGACHAT_BASE_URL else None
 
-# TLS
-VERIFY_SSL_ENV = os.getenv("GIGACHAT_VERIFY_SSL", "true").strip().lower()
-CA_BUNDLE = os.getenv("GIGACHAT_CA_BUNDLE", "").strip() or None
-# verify_ssl_certs: bool; если нужен кастомный корневой, используем переменные окружения certifi/SSL,
-# но сам SDK принимает только bool, поэтому оставляем системный truststore + возможность отключить проверку.
-VERIFY_SSL_CERTS: bool = VERIFY_SSL_ENV in ("1", "true", "yes")
+VERIFY_SSL_CERTS: bool = settings.GIGACHAT_VERIFY_SSL.lower() in ("1", "true", "yes")
 
 def _new_client() -> GigaChat:
     # По документации SDK: credentials (str), scope (optional),
@@ -105,7 +101,8 @@ async def chat(prompt: str) -> str:
         msg = getattr(choices[0], "message", None)
         content = getattr(msg, "content", "") if msg else ""
         return content.strip()
-    except Exception:
+    except Exception as e:
+        logger.exception("GigaChat chat error: %s", e)
         return ""
     finally:
         try:

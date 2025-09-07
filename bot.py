@@ -5,11 +5,13 @@ import asyncio
 import shutil
 import subprocess
 import tempfile
-from typing import List, Dict
+from typing import List
 import re
+import logging
 
-from dotenv import load_dotenv
-load_dotenv()
+from config import settings, setup_logging
+setup_logging()
+logger = logging.getLogger(__name__)
 
 # --- sys.path safety ---
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -33,7 +35,11 @@ from ingest.ingest_generic import ingest_path      # индексация пап
 from store_qdrant import get_client                # /clear_index
 from db_local import (
     init_db, upsert_user, insert_question, mark_answered,
-    log_unanswered, log_answer_score, fetch_unanswered
+    log_unanswered, log_answer_score, fetch_unanswered,
+    set_last_question, get_last_question,
+    set_pending_files, pop_pending_files,
+    log_feedback, update_feedback_comment, fetch_feedback,
+    get_user_id,
 )
 
 # Этапы 2/3 (поиск по сайту / по вебу) — должны быть в проекте
@@ -41,15 +47,14 @@ from retrieve_site_live import retrieve_site_live
 from retrieve_web_live  import retrieve_web_live
 
 # -------------------- настройки --------------------
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-if not BOT_TOKEN:
+if not settings.BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не задан в .env")
 
-ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip().isdigit()}
-QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "school_docs")
-TEACH_DIR = os.getenv("TEACH_DIR", "./teach")
+ADMIN_IDS = {int(x) for x in settings.ADMIN_IDS.split(",") if x.strip().isdigit()}
+QDRANT_COLLECTION = settings.QDRANT_COLLECTION
+TEACH_DIR = settings.TEACH_DIR
 
-bot = Bot(BOT_TOKEN)
+bot = Bot(settings.BOT_TOKEN)
 dp = Dispatcher()
 router = Router()
 dp.include_router(router)
@@ -84,8 +89,6 @@ def format_text(text: str) -> str:
     lines = [_emojify_line(ln) for ln in lines]
     return "\n".join(lines)
 
-# хранение последнего вопроса пользователя для обратной связи
-user_questions: Dict[int, str] = {}
 
 # -------------------- вспомогалки UI/админ --------------------
 def is_admin(user_id: int) -> bool:
@@ -94,9 +97,14 @@ def is_admin(user_id: int) -> bool:
 def admin_kb():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="➕ Добавить документ")],
+            [KeyboardButton(text="ℹ️ Помощь"), KeyboardButton(text="➕ Добавить документ")],
         ],
         resize_keyboard=True
+    )
+
+def user_kb():
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="ℹ️ Помощь")]], resize_keyboard=True
     )
 
 def _split_long(text: str, limit: int = 4000) -> list[str]:
@@ -119,8 +127,8 @@ def _split_long(text: str, limit: int = 4000) -> list[str]:
 CONVERT_DIR = os.path.join("outputs", "converted")
 os.makedirs(CONVERT_DIR, exist_ok=True)
 
-def docx_to_pdf(src_path: str) -> str | None:
-    """Конвертирует .docx -> .pdf через LibreOffice (headless)."""
+
+def _docx_to_pdf_sync(src_path: str) -> str | None:
     if not os.path.isfile(src_path):
         return None
     soffice = shutil.which("soffice")
@@ -130,7 +138,9 @@ def docx_to_pdf(src_path: str) -> str | None:
         with tempfile.TemporaryDirectory(prefix="docx2pdf_") as tmpdir:
             subprocess.run(
                 [soffice, "--headless", "--convert-to", "pdf", "--outdir", tmpdir, src_path],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=True,
             )
             base = os.path.splitext(os.path.basename(src_path))[0] + ".pdf"
             tmp_pdf = os.path.join(tmpdir, base)
@@ -139,8 +149,18 @@ def docx_to_pdf(src_path: str) -> str | None:
             dst_pdf = os.path.join(CONVERT_DIR, base)
             shutil.move(tmp_pdf, dst_pdf)
             return dst_pdf
-    except Exception:
+    except Exception as e:
+        logger.exception("docx_to_pdf failed: %s", e)
         return None
+
+
+async def docx_to_pdf(src_path: str, timeout: int = 20) -> str | None:
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(_docx_to_pdf_sync, src_path), timeout)
+    except Exception:
+        logger.exception("docx_to_pdf timeout or error")
+        return None
+
 
 async def send_files(m: Message, paths: List[str], limit: int = 3):
     """Отправляем файлы-источники (до limit штук). DOCX конвертируем в PDF."""
@@ -155,19 +175,22 @@ async def send_files(m: Message, paths: List[str], limit: int = 3):
             caption = os.path.basename(p)
 
             if ext == ".docx":
-                pdf_path = docx_to_pdf(p)
+                pdf_path = await docx_to_pdf(p)
                 if pdf_path and os.path.exists(pdf_path):
                     to_send_path = pdf_path
                     caption = os.path.basename(pdf_path)
                 else:
-                    await m.answer("Не удалось преобразовать DOCX в PDF, отправляю исходный файл.", parse_mode="HTML")
+                    await m.answer(
+                        "Не удалось преобразовать DOCX в PDF, отправляю исходный файл.",
+                        parse_mode="HTML",
+                    )
 
             await m.answer_document(FSInputFile(to_send_path), caption=caption)
             count += 1
         except Exception:
+            logger.exception("send_files error for %s", p)
             await m.answer(f"Не удалось отправить файл: {p}", parse_mode="HTML")
 
-pending_files: Dict[int, List[str]] = {}
 
 # клавиатура оценки ответа
 rate_kb = InlineKeyboardMarkup(
@@ -179,10 +202,18 @@ rate_kb = InlineKeyboardMarkup(
     ]
 )
 
+HELP_TEXT = (
+    "Я могу отвечать на вопросы, ищя информацию в локальной базе, на сайте и в интернете.\n"
+    "Основные команды:\n"
+    "/start — начать работу\n"
+    "/help — показать эту справку"
+)
+
 
 @router.callback_query(F.data == "get_doc")
 async def cb_get_doc(c: CallbackQuery):
-    files = pending_files.get(c.from_user.id)
+    db_uid = await asyncio.to_thread(get_user_id, c.from_user.id)
+    files = await asyncio.to_thread(pop_pending_files, db_uid) if db_uid else []
     if files:
         await send_files(c.message, files)
     else:
@@ -254,6 +285,10 @@ async def send_rating(m: Message):
 
 @router.callback_query(F.data == "rate_plus")
 async def rate_plus(c: CallbackQuery):
+    db_uid = await asyncio.to_thread(get_user_id, c.from_user.id)
+    qid, _ = await asyncio.to_thread(get_last_question, db_uid) if db_uid else (None, None)
+    if db_uid:
+        await asyncio.to_thread(log_feedback, qid, db_uid, 1, None)
     await c.message.edit_reply_markup()
     await c.message.answer("Благодарим вас за ответ", parse_mode="HTML")
     await c.answer()
@@ -261,6 +296,12 @@ async def rate_plus(c: CallbackQuery):
 
 @router.callback_query(F.data == "rate_minus")
 async def rate_minus(c: CallbackQuery, state: FSMContext):
+    db_uid = await asyncio.to_thread(get_user_id, c.from_user.id)
+    qid, _ = await asyncio.to_thread(get_last_question, db_uid) if db_uid else (None, None)
+    fid = None
+    if db_uid:
+        fid = await asyncio.to_thread(log_feedback, qid, db_uid, -1, None)
+    await state.update_data(feedback_id=fid)
     await c.message.edit_reply_markup()
     await c.message.answer("Благодарим вас за ответ", parse_mode="HTML")
     await c.message.answer("Опишите пожалуйста свою проблему", parse_mode="HTML")
@@ -270,21 +311,36 @@ async def rate_minus(c: CallbackQuery, state: FSMContext):
 
 @router.message(Feedback.waiting_text, F.text)
 async def feedback_text(m: Message, state: FSMContext):
+    data = await state.get_data()
+    feedback_id = data.get("feedback_id")
     problem = m.text.strip()
-    question = user_questions.get(m.from_user.id, "")
+    db_uid = await asyncio.to_thread(get_user_id, m.from_user.id)
+    qid, question = await asyncio.to_thread(get_last_question, db_uid) if db_uid else (None, None)
+    if feedback_id:
+        await asyncio.to_thread(update_feedback_comment, feedback_id, problem)
     user = m.from_user
     info = (
         "Негативная оценка\n"
         f"Ник: @{user.username or 'не указан'}\n"
         f"Телефон: не указан\n"
         f"ID: {user.id}\n"
-        f"Вопрос: {question}\n"
+        f"Вопрос: {question or ''}\n"
         f"Проблема: {problem}"
     )
     for admin_id in ADMIN_IDS:
         await bot.send_message(admin_id, info, parse_mode="HTML")
     await m.answer("Благодарим вас за ответ", parse_mode="HTML")
     await state.clear()
+
+
+@router.message(Command("help"))
+async def cmd_help(m: Message):
+    await m.answer(HELP_TEXT, parse_mode="HTML")
+
+
+@router.message(F.text == "ℹ️ Помощь")
+async def help_button(m: Message):
+    await m.answer(HELP_TEXT, parse_mode="HTML")
 
 # -------------------- команды админа --------------------
 @router.message(CommandStart())
@@ -300,7 +356,7 @@ async def cmd_start(m: Message):
     else:
         await m.answer(
             "Здравствуйте! Отправьте свой вопрос — я пришлю найденные фрагменты из локальной базы и приложу файлы.",
-            parse_mode="HTML"
+            reply_markup=user_kb(), parse_mode="HTML"
         )
 
 @router.message(Command("clear_index"))
@@ -349,30 +405,47 @@ async def cmd_unanswered(m: Message):
     for chunk in _split_long(text):
         await m.answer(chunk, parse_mode="HTML")
 
+
+@router.message(Command("feedback"))
+async def cmd_feedback(m: Message):
+    if not is_admin(m.from_user.id):
+        return await m.answer("Эта команда доступна только администратору.", parse_mode="HTML")
+    parts = m.text.split(maxsplit=1)
+    limit = 10
+    if len(parts) == 2:
+        try:
+            limit = int(parts[1])
+        except ValueError:
+            return await m.answer("Использование: /feedback N", parse_mode="HTML")
+    rows = await asyncio.to_thread(fetch_feedback, limit)
+    if not rows:
+        return await m.answer("Нет отзывов.", parse_mode="HTML")
+    lines = []
+    for r in rows:
+        sign = "+" if (r["rating"] or 0) > 0 else "-"
+        lines.append(f"{r['created_at']}: {sign} {r['question'] or ''} {r['comment'] or ''}")
+    text = "\n".join(lines)
+    for chunk in _split_long(text):
+        await m.answer(chunk, parse_mode="HTML")
+
 # -------------------- обработка вопроса пользователя --------------------
 @router.message(F.text & ~F.text.in_({"➕ Добавить документ"}))
 async def handle_question(m: Message, state: FSMContext):
     q = m.text.strip()
-    user_questions[m.from_user.id] = q
-    print(f"[handle_question] Received question: {q}")
+    logger.info("[handle_question] question=%s", q)
 
-    # 0) БД: логируем пользователя и вопрос
-    from db_local import DB_PATH  # только ради удобной отладки
     tg = m.from_user
     user_id = await asyncio.to_thread(upsert_user, tg.id, tg.username, tg.first_name, tg.last_name)
     question_id = await asyncio.to_thread(insert_question, user_id, q)
-    print(f"[handle_question] Stored question {question_id} from user {tg.id}")
+    await asyncio.to_thread(set_last_question, user_id, question_id, q)
+    logger.debug("Stored question %s from user %s", question_id, tg.id)
 
-    # Этап 1 — локальная база
-    print("[handle_question] Step 1: локальная база")
+    start = asyncio.get_event_loop().time()
     await m.answer("Ищу по локальной базе…", parse_mode="HTML")
     msg_text, cites, files, diag = await retrieve_local(q, top_k=3, prefer_spravochnik=False)
-    print(f"[handle_question] local msg: {msg_text}")
-    print(f"[handle_question] local cites: {cites}")
-    print(f"[handle_question] local files: {files}")
-    print(f"[handle_question] local diag: {diag}")
+    elapsed = asyncio.get_event_loop().time() - start
+    logger.info("local search finished in %.2fs", elapsed)
 
-    # Логируем все оценки (принятые и отфильтрованные)
     for payload, score in (diag.get("passed") or []):
         await asyncio.to_thread(log_answer_score, question_id, payload, score, True)
     for payload, score in (diag.get("rejected") or []):
@@ -382,12 +455,12 @@ async def handle_question(m: Message, state: FSMContext):
     msg_text = format_text(msg_text)
     for chunk in _split_long(msg_text):
         await m.answer(chunk, parse_mode="HTML")
-    print(f"[handle_question] found_local={found_local}")
+    logger.debug("found_local=%s", found_local)
 
     if found_local:
         await asyncio.to_thread(mark_answered, question_id, "local")
         if files:
-            pending_files[m.from_user.id] = files
+            await asyncio.to_thread(set_pending_files, user_id, files)
             kb = InlineKeyboardMarkup(
                 inline_keyboard=[[InlineKeyboardButton(text="Получить документ", callback_data="get_doc")]]
             )
@@ -399,41 +472,41 @@ async def handle_question(m: Message, state: FSMContext):
     reason = "no_local_hits"
     if (diag.get("rejected") and not diag.get("passed")):
         reason = "below_threshold"
-    print("[handle_question] no local results, logging unanswered reason")
+    logger.info("no local results, reason=%s", reason)
     await asyncio.to_thread(log_unanswered, question_id, reason)
 
-    # Этап 2 — сайт smp.edu.ru
-    print("[handle_question] Step 2: поиск на сайте smp.edu.ru")
+    logger.info("Step 2: поиск на сайте smp.edu.ru")
     await m.answer("Ищу на сайте smp.edu.ru…", parse_mode="HTML")
     try:
         site_text, site_results = await retrieve_site_live(q, max_results=5)
     except Exception as e:
+        logger.exception("site search error")
         site_text, site_results = (f"Ошибка поиска на сайте: {e}", [])
     site_text = format_text(site_text)
     for chunk in _split_long(site_text):
         await m.answer(chunk, parse_mode="HTML")
-    print(f"[handle_question] site_results: {site_results}")
+    logger.debug("site_results=%s", site_results)
 
     if site_results:
         await asyncio.to_thread(mark_answered, question_id, "site")
         await send_rating(m)
-        return  # есть выдача на этапе 2 → веб не запускаем
+        return
 
-    # Этап 3 — интернет (только если 1 и 2 пусто)
-    print("[handle_question] Step 3: поиск в интернете")
+    logger.info("Step 3: поиск в интернете")
     await m.answer("Ищу в интернете…", parse_mode="HTML")
     try:
         web_text, web_results = await retrieve_web_live(q, max_results=5)
     except Exception as e:
+        logger.exception("web search error")
         web_text, web_results = (f"Ошибка веб-поиска: {e}", [])
     web_text = format_text(web_text)
     for chunk in _split_long(web_text):
         await m.answer(chunk, parse_mode="HTML")
-    print(f"[handle_question] web_results: {web_results}")
+    logger.debug("web_results=%s", web_results)
 
     if web_results:
         await asyncio.to_thread(mark_answered, question_id, "web")
-        print("[handle_question] Answered via web search")
+        logger.info("Answered via web search")
     await send_rating(m)
 
 # -------------------- запуск --------------------
