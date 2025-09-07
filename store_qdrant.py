@@ -3,12 +3,15 @@ import os
 from typing import List, Dict, Any, Optional
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
-from dotenv import load_dotenv
+import logging
 
-load_dotenv()
+from config import settings
+
 # store_qdrant.py (вверху)
-QDRANT_PATH = os.getenv("QDRANT_PATH", "./qdrant_storage")
-QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "school_docs")  # <-- убедитесь, что эта строка есть на модуле уровне
+QDRANT_PATH = settings.QDRANT_PATH
+QDRANT_COLLECTION = settings.QDRANT_COLLECTION  # <-- убедитесь, что эта строка есть на модуле уровне
+
+logger = logging.getLogger(__name__)
 
 
 _client: Optional[QdrantClient] = None

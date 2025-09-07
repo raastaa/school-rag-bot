@@ -1,10 +1,19 @@
 # web_search.py
-import os, httpx
-from typing import List, Dict
+import time
+import httpx
+from typing import List, Dict, Tuple
+import logging
 
-API_KEY = os.getenv("GOOGLE_API_KEY")
-CX_SMP  = os.getenv("GOOGLE_CSE_ID_SMP")  # PSE для сайта (site-only)
-CX_WEB  = os.getenv("GOOGLE_CSE_ID_WEB")  # PSE для всего веба
+from config import settings
+
+API_KEY = settings.GOOGLE_API_KEY
+CX_SMP  = settings.GOOGLE_CSE_ID_SMP  # PSE для сайта (site-only)
+CX_WEB  = settings.GOOGLE_CSE_ID_WEB  # PSE для всего веба
+
+logger = logging.getLogger(__name__)
+
+_CACHE: dict[Tuple[str, str, int], Tuple[float, List[Dict]]] = {}
+CACHE_TTL = settings.WEB_SEARCH_CACHE_TTL
 
 class WebSearchError(Exception): pass
 
@@ -16,6 +25,11 @@ async def _google_cse(query: str, cx: str, num: int) -> List[Dict]:
         "key": API_KEY, "cx": cx, "q": query,
         "num": min(num, 10), "lr": "lang_ru", "hl": "ru", "safe": "off",
     }
+    key = (query, cx, num)
+    now = time.time()
+    if key in _CACHE and now - _CACHE[key][0] < CACHE_TTL:
+        logger.debug("web search cache hit for %s", key)
+        return _CACHE[key][1]
     async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
         r = await client.get(url, params=params)
         try:
@@ -24,7 +38,9 @@ async def _google_cse(query: str, cx: str, num: int) -> List[Dict]:
             raise WebSearchError(f"CSE {e.response.status_code}: {e.response.text[:300]}") from e
         js = r.json()
     items = js.get("items") or []
-    return [{"title": it.get("title"), "link": it.get("link"), "snippet": it.get("snippet")} for it in items]
+    result = [{"title": it.get("title"), "link": it.get("link"), "snippet": it.get("snippet")} for it in items]
+    _CACHE[key] = (now, result)
+    return result
 
 async def search_google_site(query: str, num: int = 5) -> List[Dict]:
     """Сначала PSE для сайта; если пусто — fallback: веб-cx + site:."""

@@ -1,8 +1,11 @@
 # db_local.py
-import os, sqlite3, datetime
-from typing import Optional, Tuple, Dict, Any
+import sqlite3
+import datetime
+from typing import Optional, Tuple, Dict, Any, List
 
-DB_PATH = os.getenv("APP_DB_PATH", "./app.db")
+from config import settings
+
+DB_PATH = settings.APP_DB_PATH
 
 _SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -45,6 +48,33 @@ CREATE TABLE IF NOT EXISTS answer_scores (
     FOREIGN KEY(question_id) REFERENCES questions(id)
 );
 
+CREATE TABLE IF NOT EXISTS user_questions (
+    user_id     INTEGER PRIMARY KEY,
+    question_id INTEGER,
+    question    TEXT,
+    updated_at  TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id),
+    FOREIGN KEY(question_id) REFERENCES questions(id)
+);
+
+CREATE TABLE IF NOT EXISTS pending_files (
+    user_id    INTEGER PRIMARY KEY,
+    files      TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS feedback (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    question_id INTEGER,
+    user_id     INTEGER NOT NULL,
+    rating      INTEGER NOT NULL,
+    comment     TEXT,
+    created_at  TEXT NOT NULL,
+    FOREIGN KEY(question_id) REFERENCES questions(id),
+    FOREIGN KEY(user_id) REFERENCES users(id)
+);
+
 """
 
 def _conn():
@@ -81,6 +111,17 @@ def upsert_user(tg_id: int, username: Optional[str], first_name: Optional[str], 
             user_id = cur.lastrowid
         con.commit()
         return user_id
+    finally:
+        con.close()
+
+
+def get_user_id(tg_id: int) -> Optional[int]:
+    con = _conn()
+    try:
+        cur = con.cursor()
+        cur.execute("SELECT id FROM users WHERE tg_id=?", (tg_id,))
+        row = cur.fetchone()
+        return row[0] if row else None
     finally:
         con.close()
 
@@ -142,6 +183,122 @@ def log_answer_score(question_id: int, payload: dict, score: float | None, accep
             ),
         )
         con.commit()
+    finally:
+        con.close()
+
+
+def set_last_question(user_id: int, question_id: int, question: str) -> None:
+    now = datetime.datetime.utcnow().isoformat()
+    con = _conn()
+    try:
+        con.execute(
+            "REPLACE INTO user_questions (user_id, question_id, question, updated_at) VALUES (?,?,?,?)",
+            (user_id, question_id, question, now),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def get_last_question(user_id: int) -> Tuple[Optional[int], Optional[str]]:
+    con = _conn()
+    try:
+        cur = con.cursor()
+        cur.execute(
+            "SELECT question_id, question FROM user_questions WHERE user_id=?",
+            (user_id,)
+        )
+        row = cur.fetchone()
+        if row:
+            return row[0], row[1]
+        return None, None
+    finally:
+        con.close()
+
+
+def set_pending_files(user_id: int, files: List[str]) -> None:
+    now = datetime.datetime.utcnow().isoformat()
+    import json
+    data = json.dumps(files)
+    con = _conn()
+    try:
+        con.execute(
+            "REPLACE INTO pending_files (user_id, files, created_at) VALUES (?,?,?)",
+            (user_id, data, now),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def pop_pending_files(user_id: int) -> List[str]:
+    import json
+    con = _conn()
+    try:
+        cur = con.cursor()
+        cur.execute("SELECT files FROM pending_files WHERE user_id=?", (user_id,))
+        row = cur.fetchone()
+        files: List[str] = json.loads(row[0]) if row else []
+        con.execute("DELETE FROM pending_files WHERE user_id=?", (user_id,))
+        con.commit()
+        return files
+    finally:
+        con.close()
+
+
+def log_feedback(question_id: Optional[int], user_id: int, rating: int, comment: Optional[str]) -> int:
+    now = datetime.datetime.utcnow().isoformat()
+    con = _conn()
+    try:
+        cur = con.cursor()
+        cur.execute(
+            "INSERT INTO feedback (question_id, user_id, rating, comment, created_at) VALUES (?,?,?,?,?)",
+            (question_id, user_id, rating, comment, now),
+        )
+        fid = cur.lastrowid
+        con.commit()
+        return fid
+    finally:
+        con.close()
+
+
+def update_feedback_comment(feedback_id: int, comment: str) -> None:
+    con = _conn()
+    try:
+        con.execute(
+            "UPDATE feedback SET comment=? WHERE id=?",
+            (comment, feedback_id),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def fetch_feedback(limit: int) -> List[dict[str, Any]]:
+    con = _conn()
+    try:
+        cur = con.cursor()
+        cur.execute(
+            """
+            SELECT f.id, q.question, f.rating, f.comment, f.created_at
+            FROM feedback f
+            LEFT JOIN questions q ON f.question_id = q.id
+            ORDER BY f.id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = cur.fetchall()
+        return [
+            {
+                "id": r[0],
+                "question": r[1],
+                "rating": r[2],
+                "comment": r[3],
+                "created_at": r[4],
+            }
+            for r in rows
+        ]
     finally:
         con.close()
 

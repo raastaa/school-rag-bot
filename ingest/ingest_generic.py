@@ -32,6 +32,7 @@ from text_utils import (
 )
 from gigachat_client import GigaChatEmbedder, detect_dim
 from store_qdrant import ensure_collection, upsert_chunks
+from config import settings
 
 SOURCE_GROUP_DEFAULT = "zabedu"
 
@@ -182,7 +183,7 @@ async def ingest_file(
     # 4) эмбеддинги + upsert в Qdrant
     embedder = GigaChatEmbedder()
     total = 0
-    BATCH = int(os.getenv("EMBEDDING_BATCH", "64"))
+    BATCH = settings.EMBEDDING_BATCH
     for i in range(0, len(texts), BATCH):
         batch_vecs = await embedder.embed(texts[i:i + BATCH])
         upsert_chunks(batch_vecs, payloads[i:i + BATCH])
