@@ -33,7 +33,7 @@ from ingest.ingest_generic import ingest_path      # индексация пап
 from store_qdrant import get_client                # /clear_index
 from db_local import (
     init_db, upsert_user, insert_question, mark_answered,
-    log_unanswered, log_answer_score
+    log_unanswered, log_answer_score, fetch_unanswered
 )
 
 # Этапы 2/3 (поиск по сайту / по вебу) — должны быть в проекте
@@ -328,6 +328,26 @@ async def cmd_ingest_teach(m: Message):
         await m.answer(f"Готово. Файлов: {res.get('files')}, чанков: {res.get('chunks')}", parse_mode="HTML")
     except Exception as e:
         await m.answer(f"Ошибка при индексации teach/: {e}", parse_mode="HTML")
+
+
+@router.message(Command("unanswered"))
+async def cmd_unanswered(m: Message):
+    if not is_admin(m.from_user.id):
+        return await m.answer("Эта команда доступна только администратору.", parse_mode="HTML")
+    parts = m.text.split(maxsplit=1)
+    limit = 10
+    if len(parts) == 2:
+        try:
+            limit = int(parts[1])
+        except ValueError:
+            return await m.answer("Использование: /unanswered N", parse_mode="HTML")
+    rows = await asyncio.to_thread(fetch_unanswered, limit)
+    if not rows:
+        return await m.answer("Список пуст.", parse_mode="HTML")
+    lines = [f"{i+1}. {r['question']} — {r['reason']}" for i, r in enumerate(rows)]
+    text = "\n".join(lines)
+    for chunk in _split_long(text):
+        await m.answer(chunk, parse_mode="HTML")
 
 # -------------------- обработка вопроса пользователя --------------------
 @router.message(F.text & ~F.text.in_({"➕ Добавить документ"}))
