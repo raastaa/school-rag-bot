@@ -280,9 +280,18 @@ def fetch_feedback(limit: int) -> List[dict[str, Any]]:
         cur = con.cursor()
         cur.execute(
             """
-            SELECT f.id, q.question, f.rating, f.comment, f.created_at
+            SELECT f.id,
+                   q.question,
+                   f.rating,
+                   f.comment,
+                   f.created_at,
+                   u.tg_id,
+                   u.username,
+                   u.first_name,
+                   u.last_name
             FROM feedback f
             LEFT JOIN questions q ON f.question_id = q.id
+            JOIN users u ON f.user_id = u.id
             ORDER BY f.id DESC
             LIMIT ?
             """,
@@ -296,6 +305,10 @@ def fetch_feedback(limit: int) -> List[dict[str, Any]]:
                 "rating": r[2],
                 "comment": r[3],
                 "created_at": r[4],
+                "tg_id": r[5],
+                "username": r[6],
+                "first_name": r[7],
+                "last_name": r[8],
             }
             for r in rows
         ]
