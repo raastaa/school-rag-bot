@@ -144,3 +144,23 @@ def log_answer_score(question_id: int, payload: dict, score: float | None, accep
         con.commit()
     finally:
         con.close()
+
+
+def fetch_unanswered(limit: int) -> list[dict[str, str | None]]:
+    con = _conn()
+    try:
+        cur = con.cursor()
+        cur.execute(
+            """
+            SELECT q.question, u.reason
+            FROM unanswered u
+            JOIN questions q ON u.question_id = q.id
+            ORDER BY u.id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = cur.fetchall()
+        return [{"question": r[0], "reason": r[1]} for r in rows]
+    finally:
+        con.close()
