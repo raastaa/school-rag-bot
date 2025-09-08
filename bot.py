@@ -41,6 +41,7 @@ from db_local import (
     log_feedback, update_feedback_comment, fetch_feedback,
     get_user_id,
 )
+from gigachat_client import chat
 
 # Этапы 2/3 (поиск по сайту / по вебу) — должны быть в проекте
 from retrieve_site_live import retrieve_site_live
@@ -122,6 +123,24 @@ def _split_long(text: str, limit: int = 4000) -> list[str]:
     if cur:
         out.append("".join(cur).rstrip())
     return out
+
+# -------------------- проверка ответа через GigaChat --------------------
+async def verify_answer(question: str, answer: str, threshold: float = 0.7) -> bool:
+    """Возвращает True, если ответ релевантен вопросу по мнению GigaChat."""
+    prompt = (
+        "Оцени в процентах насколько следующий ответ соответствует вопросу. "
+        "Ответь только числом.\n\n"
+        f"Вопрос:\n{question}\n\nОтвет:\n{answer}"
+    )
+    resp = await chat(prompt)
+    if not resp:
+        return False
+    m = re.search(r"\d+(?:[.,]\d+)?", resp)
+    try:
+        score = float(m.group().replace(',', '.')) if m else 0.0
+    except ValueError:
+        score = 0.0
+    return score >= threshold * 100
 
 # -------------------- отправка источников (+ DOCX→PDF) --------------------
 CONVERT_DIR = os.path.join("outputs", "converted")
@@ -471,6 +490,21 @@ async def handle_question(m: Message, state: FSMContext):
         await asyncio.to_thread(log_answer_score, question_id, payload, score, True)
     for payload, score in (diag.get("rejected") or []):
         await asyncio.to_thread(log_answer_score, question_id, payload, score, False)
+
+    valid = await verify_answer(q, msg_text)
+    if not valid:
+        prompt_gc = (
+            "ты юридический консультант образовательных учреждений даешь консультации по "
+            "нормативной и юридической части работы ответь на "
+            f"{q} в качесте ответа приведи краткий алгоритм действий по данному вопросу и краткую информацию на какие документы ссылаешься"
+        )
+        msg_gc = await chat(prompt_gc)
+        msg_gc = format_text(msg_gc)
+        for chunk in _split_long(msg_gc):
+            await m.answer(chunk, parse_mode="HTML")
+        await asyncio.to_thread(mark_answered, question_id, "gigachat")
+        await send_rating(m)
+        return
 
     found_local = bool(cites)
     msg_text = format_text(msg_text)
