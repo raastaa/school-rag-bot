@@ -1,0 +1,14 @@
+aiogram
+pydantic-settings
+python-dotenv
+qdrant-client
+tiktoken
+gigachat
+pgvector
+sqlalchemy
+pypdf
+reportlab
+python-docx
+beautifulsoup4
+trafilatura
+httpx
