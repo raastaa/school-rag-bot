@@ -1,0 +1,958 @@
+{
+  "chunk_size": 1000,
+  "chunk_overlap": 180,
+  "corpus_documents": 2,
+  "corpus_chunks": 547,
+  "evaluation_queries": 10,
+  "selection_rule": "max Hit@3, затем max MRR, затем min mean_query_ms",
+  "selected_model": "intfloat/multilingual-e5-small",
+  "summary": [
+    {
+      "model": "sentence-transformers/all-MiniLM-L6-v2",
+      "dimensions": 384,
+      "chunks": 547,
+      "queries": 10,
+      "hit_at_3": 0.0,
+      "mrr": 0.0,
+      "load_s": 9.361,
+      "corpus_encode_s": 10.313,
+      "chunks_per_s": 53.04,
+      "mean_query_ms": 11.54,
+      "p95_query_ms": 17.76
+    },
+    {
+      "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+      "dimensions": 384,
+      "chunks": 547,
+      "queries": 10,
+      "hit_at_3": 0.7,
+      "mrr": 0.65,
+      "load_s": 10.153,
+      "corpus_encode_s": 9.784,
+      "chunks_per_s": 55.91,
+      "mean_query_ms": 22.22,
+      "p95_query_ms": 42.54
+    },
+    {
+      "model": "intfloat/multilingual-e5-small",
+      "dimensions": 384,
+      "chunks": 547,
+      "queries": 10,
+      "hit_at_3": 0.9,
+      "mrr": 0.85,
+      "load_s": 10.676,
+      "corpus_encode_s": 29.813,
+      "chunks_per_s": 18.35,
+      "mean_query_ms": 18.02,
+      "p95_query_ms": 27.2
+    }
+  ],
+  "details": [
+    {
+      "model": "sentence-transformers/all-MiniLM-L6-v2",
+      "question": "Что включает план внеурочной деятельности школы?",
+      "expected_document": "01_Kniga_direktora_Znanie.pdf",
+      "expected_pages": [
+        25,
+        49
+      ],
+      "rank": null,
+      "top_3": [
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 1,
+          "chunk": 1,
+          "score": 0.7176
+        },
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 1,
+          "chunk": 1,
+          "score": 0.71
+        },
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 51,
+          "chunk": 1,
+          "score": 0.5994
+        }
+      ]
+    },
+    {
+      "model": "sentence-transformers/all-MiniLM-L6-v2",
+      "question": "Как проводится школьный этап Всероссийской олимпиады школьников?",
+      "expected_document": "01_Kniga_direktora_Znanie.pdf",
+      "expected_pages": [
+        53,
+        54
+      ],
+      "rank": null,
+      "top_3": [
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 1,
+          "chunk": 1,
+          "score": 0.7156
+        },
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 1,
+          "chunk": 1,
+          "score": 0.6863
+        },
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 3,
+          "chunk": 1,
+          "score": 0.6223
+        }
+      ]
+    },
+    {
+      "model": "sentence-transformers/all-MiniLM-L6-v2",
+      "question": "Что такое индивидуальный учебный план обучающегося?",
+      "expected_document": "01_Kniga_direktora_Znanie.pdf",
+      "expected_pages": [
+        18,
+        24
+      ],
+      "rank": null,
+      "top_3": [
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 14,
+          "chunk": 7,
+          "score": 0.6776
+        },
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 28,
+          "chunk": 1,
+          "score": 0.6383
+        },
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 46,
+          "chunk": 7,
+          "score": 0.5969
+        }
+      ]
+    },
+    {
+      "model": "sentence-transformers/all-MiniLM-L6-v2",
+      "question": "Как составлять календарный учебный график по триместрам?",
+      "expected_document": "01_Kniga_direktora_Znanie.pdf",
+      "expected_pages": [
+        25,
+        26
+      ],
+      "rank": null,
+      "top_3": [
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 51,
+          "chunk": 1,
+          "score": 0.6377
+        },
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 11,
+          "chunk": 1,
+          "score": 0.6114
+        },
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 15,
+          "chunk": 1,
+          "score": 0.602
+        }
+      ]
+    },
+    {
+      "model": "sentence-transformers/all-MiniLM-L6-v2",
+      "question": "Из каких разделов состоит федеральная образовательная программа?",
+      "expected_document": "01_Kniga_direktora_Znanie.pdf",
+      "expected_pages": [
+        10,
+        11,
+        12
+      ],
+      "rank": null,
+      "top_3": [
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 28,
+          "chunk": 1,
+          "score": 0.5741
+        },
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 24,
+          "chunk": 5,
+          "score": 0.572
+        },
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 7,
+          "chunk": 6,
+          "score": 0.5709
+        }
+      ]
+    },
+    {
+      "model": "sentence-transformers/all-MiniLM-L6-v2",
+      "question": "Какие рекомендации даны по составлению школьного расписания?",
+      "expected_document": "02_Kniga_direktora_Zdorove.pdf",
+      "expected_pages": [
+        39,
+        40
+      ],
+      "rank": null,
+      "top_3": [
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 51,
+          "chunk": 1,
+          "score": 0.7548
+        },
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 47,
+          "chunk": 5,
+          "score": 0.6689
+        },
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 37,
+          "chunk": 4,
+          "score": 0.6447
+        }
+      ]
+    },
+    {
+      "model": "sentence-transformers/all-MiniLM-L6-v2",
+      "question": "Как организовать качественное горячее питание учеников начальной школы?",
+      "expected_document": "02_Kniga_direktora_Zdorove.pdf",
+      "expected_pages": [
+        35,
+        36,
+        37
+      ],
+      "rank": null,
+      "top_3": [
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 1,
+          "chunk": 1,
+          "score": 0.669
+        },
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 1,
+          "chunk": 1,
+          "score": 0.6458
+        },
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 51,
+          "chunk": 1,
+          "score": 0.6403
+        }
+      ]
+    },
+    {
+      "model": "sentence-transformers/all-MiniLM-L6-v2",
+      "question": "Как школе выстроить профилактику травматизма обучающихся?",
+      "expected_document": "02_Kniga_direktora_Zdorove.pdf",
+      "expected_pages": [
+        47,
+        48
+      ],
+      "rank": null,
+      "top_3": [
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 1,
+          "chunk": 1,
+          "score": 0.6761
+        },
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 1,
+          "chunk": 1,
+          "score": 0.668
+        },
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 11,
+          "chunk": 1,
+          "score": 0.6647
+        }
+      ]
+    },
+    {
+      "model": "sentence-transformers/all-MiniLM-L6-v2",
+      "question": "Какие материалы предназначены для обучения работников первой помощи?",
+      "expected_document": "02_Kniga_direktora_Zdorove.pdf",
+      "expected_pages": [
+        50
+      ],
+      "rank": null,
+      "top_3": [
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 51,
+          "chunk": 1,
+          "score": 0.6767
+        },
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 22,
+          "chunk": 3,
+          "score": 0.6402
+        },
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 38,
+          "chunk": 3,
+          "score": 0.6395
+        }
+      ]
+    },
+    {
+      "model": "sentence-transformers/all-MiniLM-L6-v2",
+      "question": "Что делать при наружном кровотечении у пострадавшего?",
+      "expected_document": "02_Kniga_direktora_Zdorove.pdf",
+      "expected_pages": [
+        51,
+        52,
+        53
+      ],
+      "rank": null,
+      "top_3": [
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 28,
+          "chunk": 1,
+          "score": 0.6229
+        },
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 1,
+          "chunk": 1,
+          "score": 0.5924
+        },
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 47,
+          "chunk": 5,
+          "score": 0.5908
+        }
+      ]
+    },
+    {
+      "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+      "question": "Что включает план внеурочной деятельности школы?",
+      "expected_document": "01_Kniga_direktora_Znanie.pdf",
+      "expected_pages": [
+        25,
+        49
+      ],
+      "rank": null,
+      "top_3": [
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 27,
+          "chunk": 3,
+          "score": 0.777
+        },
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 21,
+          "chunk": 1,
+          "score": 0.7495
+        },
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 18,
+          "chunk": 2,
+          "score": 0.7462
+        }
+      ]
+    },
+    {
+      "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+      "question": "Как проводится школьный этап Всероссийской олимпиады школьников?",
+      "expected_document": "01_Kniga_direktora_Znanie.pdf",
+      "expected_pages": [
+        53,
+        54
+      ],
+      "rank": 1,
+      "top_3": [
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 54,
+          "chunk": 3,
+          "score": 0.9096
+        },
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 54,
+          "chunk": 2,
+          "score": 0.8559
+        },
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 54,
+          "chunk": 4,
+          "score": 0.822
+        }
+      ]
+    },
+    {
+      "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+      "question": "Что такое индивидуальный учебный план обучающегося?",
+      "expected_document": "01_Kniga_direktora_Znanie.pdf",
+      "expected_pages": [
+        18,
+        24
+      ],
+      "rank": null,
+      "top_3": [
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 33,
+          "chunk": 2,
+          "score": 0.7821
+        },
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 22,
+          "chunk": 4,
+          "score": 0.7384
+        },
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 27,
+          "chunk": 3,
+          "score": 0.7291
+        }
+      ]
+    },
+    {
+      "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+      "question": "Как составлять календарный учебный график по триместрам?",
+      "expected_document": "01_Kniga_direktora_Znanie.pdf",
+      "expected_pages": [
+        25,
+        26
+      ],
+      "rank": 1,
+      "top_3": [
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 25,
+          "chunk": 4,
+          "score": 0.8054
+        },
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 26,
+          "chunk": 1,
+          "score": 0.7962
+        },
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 40,
+          "chunk": 2,
+          "score": 0.7223
+        }
+      ]
+    },
+    {
+      "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+      "question": "Из каких разделов состоит федеральная образовательная программа?",
+      "expected_document": "01_Kniga_direktora_Znanie.pdf",
+      "expected_pages": [
+        10,
+        11,
+        12
+      ],
+      "rank": 2,
+      "top_3": [
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 18,
+          "chunk": 6,
+          "score": 0.841
+        },
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 12,
+          "chunk": 1,
+          "score": 0.8408
+        },
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 23,
+          "chunk": 1,
+          "score": 0.8201
+        }
+      ]
+    },
+    {
+      "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+      "question": "Какие рекомендации даны по составлению школьного расписания?",
+      "expected_document": "02_Kniga_direktora_Zdorove.pdf",
+      "expected_pages": [
+        39,
+        40
+      ],
+      "rank": 1,
+      "top_3": [
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 40,
+          "chunk": 2,
+          "score": 0.7678
+        },
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 39,
+          "chunk": 3,
+          "score": 0.7487
+        },
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 26,
+          "chunk": 1,
+          "score": 0.7389
+        }
+      ]
+    },
+    {
+      "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+      "question": "Как организовать качественное горячее питание учеников начальной школы?",
+      "expected_document": "02_Kniga_direktora_Zdorove.pdf",
+      "expected_pages": [
+        35,
+        36,
+        37
+      ],
+      "rank": 1,
+      "top_3": [
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 36,
+          "chunk": 5,
+          "score": 0.8672
+        },
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 36,
+          "chunk": 4,
+          "score": 0.8495
+        },
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 36,
+          "chunk": 2,
+          "score": 0.8158
+        }
+      ]
+    },
+    {
+      "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+      "question": "Как школе выстроить профилактику травматизма обучающихся?",
+      "expected_document": "02_Kniga_direktora_Zdorove.pdf",
+      "expected_pages": [
+        47,
+        48
+      ],
+      "rank": 1,
+      "top_3": [
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 47,
+          "chunk": 3,
+          "score": 0.7985
+        },
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 47,
+          "chunk": 4,
+          "score": 0.74
+        },
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 47,
+          "chunk": 2,
+          "score": 0.6695
+        }
+      ]
+    },
+    {
+      "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+      "question": "Какие материалы предназначены для обучения работников первой помощи?",
+      "expected_document": "02_Kniga_direktora_Zdorove.pdf",
+      "expected_pages": [
+        50
+      ],
+      "rank": 1,
+      "top_3": [
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 50,
+          "chunk": 2,
+          "score": 0.7642
+        },
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 31,
+          "chunk": 4,
+          "score": 0.7392
+        },
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 50,
+          "chunk": 4,
+          "score": 0.6744
+        }
+      ]
+    },
+    {
+      "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+      "question": "Что делать при наружном кровотечении у пострадавшего?",
+      "expected_document": "02_Kniga_direktora_Zdorove.pdf",
+      "expected_pages": [
+        51,
+        52,
+        53
+      ],
+      "rank": null,
+      "top_3": [
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 59,
+          "chunk": 2,
+          "score": 0.6064
+        },
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 60,
+          "chunk": 2,
+          "score": 0.5501
+        },
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 58,
+          "chunk": 2,
+          "score": 0.5458
+        }
+      ]
+    },
+    {
+      "model": "intfloat/multilingual-e5-small",
+      "question": "Что включает план внеурочной деятельности школы?",
+      "expected_document": "01_Kniga_direktora_Znanie.pdf",
+      "expected_pages": [
+        25,
+        49
+      ],
+      "rank": 1,
+      "top_3": [
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 49,
+          "chunk": 2,
+          "score": 0.885
+        },
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 25,
+          "chunk": 1,
+          "score": 0.8685
+        },
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 49,
+          "chunk": 1,
+          "score": 0.8648
+        }
+      ]
+    },
+    {
+      "model": "intfloat/multilingual-e5-small",
+      "question": "Как проводится школьный этап Всероссийской олимпиады школьников?",
+      "expected_document": "01_Kniga_direktora_Znanie.pdf",
+      "expected_pages": [
+        53,
+        54
+      ],
+      "rank": 1,
+      "top_3": [
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 54,
+          "chunk": 3,
+          "score": 0.918
+        },
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 54,
+          "chunk": 6,
+          "score": 0.9048
+        },
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 55,
+          "chunk": 2,
+          "score": 0.8996
+        }
+      ]
+    },
+    {
+      "model": "intfloat/multilingual-e5-small",
+      "question": "Что такое индивидуальный учебный план обучающегося?",
+      "expected_document": "01_Kniga_direktora_Znanie.pdf",
+      "expected_pages": [
+        18,
+        24
+      ],
+      "rank": 1,
+      "top_3": [
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 18,
+          "chunk": 2,
+          "score": 0.8941
+        },
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 22,
+          "chunk": 6,
+          "score": 0.876
+        },
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 22,
+          "chunk": 4,
+          "score": 0.8734
+        }
+      ]
+    },
+    {
+      "model": "intfloat/multilingual-e5-small",
+      "question": "Как составлять календарный учебный график по триместрам?",
+      "expected_document": "01_Kniga_direktora_Znanie.pdf",
+      "expected_pages": [
+        25,
+        26
+      ],
+      "rank": 1,
+      "top_3": [
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 25,
+          "chunk": 3,
+          "score": 0.8842
+        },
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 26,
+          "chunk": 1,
+          "score": 0.8691
+        },
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 27,
+          "chunk": 3,
+          "score": 0.8635
+        }
+      ]
+    },
+    {
+      "model": "intfloat/multilingual-e5-small",
+      "question": "Из каких разделов состоит федеральная образовательная программа?",
+      "expected_document": "01_Kniga_direktora_Znanie.pdf",
+      "expected_pages": [
+        10,
+        11,
+        12
+      ],
+      "rank": 2,
+      "top_3": [
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 18,
+          "chunk": 6,
+          "score": 0.8804
+        },
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 11,
+          "chunk": 2,
+          "score": 0.8777
+        },
+        {
+          "filename": "01_Kniga_direktora_Znanie.pdf",
+          "page": 17,
+          "chunk": 2,
+          "score": 0.874
+        }
+      ]
+    },
+    {
+      "model": "intfloat/multilingual-e5-small",
+      "question": "Какие рекомендации даны по составлению школьного расписания?",
+      "expected_document": "02_Kniga_direktora_Zdorove.pdf",
+      "expected_pages": [
+        39,
+        40
+      ],
+      "rank": 1,
+      "top_3": [
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 39,
+          "chunk": 1,
+          "score": 0.8676
+        },
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 42,
+          "chunk": 2,
+          "score": 0.8666
+        },
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 39,
+          "chunk": 3,
+          "score": 0.8603
+        }
+      ]
+    },
+    {
+      "model": "intfloat/multilingual-e5-small",
+      "question": "Как организовать качественное горячее питание учеников начальной школы?",
+      "expected_document": "02_Kniga_direktora_Zdorove.pdf",
+      "expected_pages": [
+        35,
+        36,
+        37
+      ],
+      "rank": 1,
+      "top_3": [
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 36,
+          "chunk": 5,
+          "score": 0.9179
+        },
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 37,
+          "chunk": 2,
+          "score": 0.9142
+        },
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 36,
+          "chunk": 4,
+          "score": 0.9083
+        }
+      ]
+    },
+    {
+      "model": "intfloat/multilingual-e5-small",
+      "question": "Как школе выстроить профилактику травматизма обучающихся?",
+      "expected_document": "02_Kniga_direktora_Zdorove.pdf",
+      "expected_pages": [
+        47,
+        48
+      ],
+      "rank": 1,
+      "top_3": [
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 47,
+          "chunk": 4,
+          "score": 0.8685
+        },
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 47,
+          "chunk": 3,
+          "score": 0.864
+        },
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 48,
+          "chunk": 3,
+          "score": 0.8563
+        }
+      ]
+    },
+    {
+      "model": "intfloat/multilingual-e5-small",
+      "question": "Какие материалы предназначены для обучения работников первой помощи?",
+      "expected_document": "02_Kniga_direktora_Zdorove.pdf",
+      "expected_pages": [
+        50
+      ],
+      "rank": 1,
+      "top_3": [
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 50,
+          "chunk": 2,
+          "score": 0.8832
+        },
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 31,
+          "chunk": 3,
+          "score": 0.8803
+        },
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 50,
+          "chunk": 1,
+          "score": 0.8783
+        }
+      ]
+    },
+    {
+      "model": "intfloat/multilingual-e5-small",
+      "question": "Что делать при наружном кровотечении у пострадавшего?",
+      "expected_document": "02_Kniga_direktora_Zdorove.pdf",
+      "expected_pages": [
+        51,
+        52,
+        53
+      ],
+      "rank": null,
+      "top_3": [
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 63,
+          "chunk": 2,
+          "score": 0.8757
+        },
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 33,
+          "chunk": 2,
+          "score": 0.8634
+        },
+        {
+          "filename": "02_Kniga_direktora_Zdorove.pdf",
+          "page": 62,
+          "chunk": 3,
+          "score": 0.8634
+        }
+      ]
+    }
+  ]
+}

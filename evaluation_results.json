@@ -1,0 +1,95 @@
+{
+  "documents": 2,
+  "chunks": 547,
+  "questions": 12,
+  "hit_at_3": 1.0,
+  "mrr": 1.0,
+  "mean_latency_ms": 31.8,
+  "embedding": "intfloat/multilingual-e5-small",
+  "details": [
+    {
+      "question": "Что включает единая система оценки качества образования?",
+      "expected": "Znanie",
+      "top_document": "01_Kniga_direktora_Znanie.pdf",
+      "rank": 1,
+      "latency_ms": 65.7
+    },
+    {
+      "question": "Как директору использовать результаты оценки качества образования?",
+      "expected": "Znanie",
+      "top_document": "01_Kniga_direktora_Znanie.pdf",
+      "rank": 1,
+      "latency_ms": 24.4
+    },
+    {
+      "question": "Какие требования задают федеральные государственные образовательные стандарты?",
+      "expected": "Znanie",
+      "top_document": "01_Kniga_direktora_Znanie.pdf",
+      "rank": 1,
+      "latency_ms": 24.2
+    },
+    {
+      "question": "Как в школе организуется внеурочная деятельность?",
+      "expected": "Znanie",
+      "top_document": "01_Kniga_direktora_Znanie.pdf",
+      "rank": 1,
+      "latency_ms": 30.6
+    },
+    {
+      "question": "Какие материалы относятся к Всероссийской олимпиаде школьников?",
+      "expected": "Znanie",
+      "top_document": "01_Kniga_direktora_Znanie.pdf",
+      "rank": 1,
+      "latency_ms": 53.4
+    },
+    {
+      "question": "Для чего используется портал «Единое содержание общего образования»?",
+      "expected": "Znanie",
+      "top_document": "01_Kniga_direktora_Znanie.pdf",
+      "rank": 1,
+      "latency_ms": 24.2
+    },
+    {
+      "question": "Как организовать здоровьесберегающую среду в школе?",
+      "expected": "Zdorove",
+      "top_document": "02_Kniga_direktora_Zdorove.pdf",
+      "rank": 1,
+      "latency_ms": 23.4
+    },
+    {
+      "question": "Какие меры помогают сохранять здоровье обучающихся?",
+      "expected": "Zdorove",
+      "top_document": "02_Kniga_direktora_Zdorove.pdf",
+      "rank": 1,
+      "latency_ms": 19.9
+    },
+    {
+      "question": "Какие рекомендации даны по организации питания обучающихся?",
+      "expected": "Zdorove",
+      "top_document": "02_Kniga_direktora_Zdorove.pdf",
+      "rank": 1,
+      "latency_ms": 28.5
+    },
+    {
+      "question": "Как составлять учебное расписание с учетом здоровья детей?",
+      "expected": "Zdorove",
+      "top_document": "02_Kniga_direktora_Zdorove.pdf",
+      "rank": 1,
+      "latency_ms": 23.3
+    },
+    {
+      "question": "Как проводить мониторинг физического здоровья обучающихся?",
+      "expected": "Zdorove",
+      "top_document": "02_Kniga_direktora_Zdorove.pdf",
+      "rank": 1,
+      "latency_ms": 20.2
+    },
+    {
+      "question": "Какие меры используются для профилактики травматизма в школе?",
+      "expected": "Zdorove",
+      "top_document": "02_Kniga_direktora_Zdorove.pdf",
+      "rank": 1,
+      "latency_ms": 44.1
+    }
+  ]
+}

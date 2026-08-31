@@ -1,4 +1,7 @@
-/.env
-/.venv
-/__pycache__
-/ad
+__pycache__/
+.pytest_cache/
+.env
+data/chroma/*
+data/uploads/*
+data/registry.sqlite
+

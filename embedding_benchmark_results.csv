@@ -1,0 +1,4 @@
+model,dimensions,chunks,queries,hit_at_3,mrr,load_s,corpus_encode_s,chunks_per_s,mean_query_ms,p95_query_ms
+sentence-transformers/all-MiniLM-L6-v2,384,547,10,0.0,0.0,9.361,10.313,53.04,11.54,17.76
+sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2,384,547,10,0.7,0.65,10.153,9.784,55.91,22.22,42.54
+intfloat/multilingual-e5-small,384,547,10,0.9,0.85,10.676,29.813,18.35,18.02,27.2
